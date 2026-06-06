@@ -52,6 +52,20 @@ typedef struct {
  * index_repository flow and open the resulting graph DB (NULL on failure).
  * Split out of lang_index_files so a caller can interpose between writing files
  * and indexing (e.g. the FILE_CHANGES_WITH test git-inits + commits first). */
+
+/* Normalize backslashes to forward slashes in place. cbm_mkdtemp on Windows
+ * (msys2) yields a native path with backslashes (e.g. D:\a\_temp\...); those
+ * break the JSON repo_path ("\a"/"\t" are invalid JSON escapes → index fails →
+ * count=-1) and produce mixed-separator paths in git -C args. Forward slashes
+ * are valid in JSON and accepted by Windows file APIs and git. */
+static void lc_to_fwd_slashes(char *p) {
+    for (; *p; p++) {
+        if (*p == '\\') {
+            *p = '/';
+        }
+    }
+}
+
 static cbm_store_t *lang_open_indexed(LangProj *lp) {
     lp->project = cbm_project_name_from_path(lp->tmpdir);
     if (!lp->project) {
@@ -88,6 +102,7 @@ static cbm_store_t *lang_index_files(LangProj *lp, const LangFile *files, int nf
     if (!cbm_mkdtemp(lp->tmpdir)) {
         return NULL;
     }
+    lc_to_fwd_slashes(lp->tmpdir);
     for (int i = 0; i < nfiles; i++) {
         char path[700];
         snprintf(path, sizeof(path), "%s/%s", lp->tmpdir, files[i].name);
@@ -1175,6 +1190,7 @@ TEST(contract_edge_file_changes_with) {
     memset(&lp, 0, sizeof(lp));
     snprintf(lp.tmpdir, sizeof(lp.tmpdir), "/tmp/cbm_fcw_XXXXXX");
     ASSERT_NOT_NULL(cbm_mkdtemp(lp.tmpdir));
+    lc_to_fwd_slashes(lp.tmpdir);
 
     char a[700];
     char b[700];
