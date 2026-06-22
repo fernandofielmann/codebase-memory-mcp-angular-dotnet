@@ -380,23 +380,40 @@ void cbm_gitignore_free(cbm_gitignore_t *gi) {
     free(gi);
 }
 
-void cbm_gitignore_merge(cbm_gitignore_t *dst, const cbm_gitignore_t *src) {
-    if (!dst || !src || src->count == 0) {
-        return;
+/* Test seam: lets a unit test simulate strdup() failure mid-merge so the
+ * atomic-rollback path can be exercised without real OOM. NULL = use strdup. */
+char *(*cbm_gitignore_merge_dup_hook_for_test)(const char *) = NULL;
+
+bool cbm_gitignore_merge(cbm_gitignore_t *dst, const cbm_gitignore_t *src) {
+    if (!dst) {
+        return false;
+    }
+    if (!src || src->count == 0) {
+        return true; /* nothing to merge */
     }
     int needed = dst->count + src->count;
     if (needed > dst->capacity) {
         gi_pattern_t *grown = realloc(dst->patterns, (size_t)needed * sizeof(gi_pattern_t));
         if (!grown) {
-            return;
+            return false; /* dst left unchanged */
         }
         dst->patterns = grown;
         dst->capacity = needed;
     }
+    int start_count = dst->count;
     for (int i = 0; i < src->count; i++) {
-        char *pat = strdup(src->patterns[i].pattern);
+        char *pat = cbm_gitignore_merge_dup_hook_for_test
+                        ? cbm_gitignore_merge_dup_hook_for_test(src->patterns[i].pattern)
+                        : strdup(src->patterns[i].pattern);
         if (!pat) {
-            return;
+            /* Roll back partial copies so dst is unchanged on failure (atomic
+             * merge). A silent partial merge could drop the very exclude
+             * pattern the caller relied on while keeping others. */
+            for (int j = start_count; j < dst->count; j++) {
+                free(dst->patterns[j].pattern);
+            }
+            dst->count = start_count;
+            return false;
         }
         dst->patterns[dst->count].pattern = pat;
         dst->patterns[dst->count].negated = src->patterns[i].negated;
@@ -404,4 +421,5 @@ void cbm_gitignore_merge(cbm_gitignore_t *dst, const cbm_gitignore_t *src) {
         dst->patterns[dst->count].rooted = src->patterns[i].rooted;
         dst->count++;
     }
+    return true;
 }

@@ -6,6 +6,7 @@
 #include "../src/foundation/compat.h"
 #include "test_framework.h"
 #include "discover/discover.h"
+#include <string.h> /* strdup (test seam) */
 
 /* ── Basic pattern matching ────────────────────────────────────── */
 
@@ -230,6 +231,49 @@ TEST(gi_merge_null_safe) {
     PASS();
 }
 
+/* Reproduce-first guard for #493: when an allocation fails mid-merge,
+ * cbm_gitignore_merge must leave dst exactly as it was (atomic) and signal
+ * failure — never a partial merge that keeps some src patterns and drops
+ * others. The seam below injects a strdup failure on the 2nd src pattern.
+ * Without the atomic rollback this test is RED: the first src pattern ("a/")
+ * leaks into dst, so `matches(dst, "a", true)` is true. */
+extern char *(*cbm_gitignore_merge_dup_hook_for_test)(const char *);
+
+static int gi_dup_calls;
+static int gi_dup_fail_at;
+static char *gi_failing_dup(const char *s) {
+    if (++gi_dup_calls > gi_dup_fail_at) {
+        return NULL;
+    }
+    return strdup(s);
+}
+
+TEST(gi_merge_atomic_on_alloc_failure) {
+    cbm_gitignore_t *dst = cbm_gitignore_parse("*.log\n");      /* 1 pattern */
+    cbm_gitignore_t *src = cbm_gitignore_parse("a/\nb/\nc/\n"); /* 3 patterns */
+    ASSERT_NOT_NULL(dst);
+    ASSERT_NOT_NULL(src);
+
+    gi_dup_calls = 0;
+    gi_dup_fail_at = 1; /* first src pattern copies; second fails */
+    cbm_gitignore_merge_dup_hook_for_test = gi_failing_dup;
+
+    bool ok = cbm_gitignore_merge(dst, src);
+
+    cbm_gitignore_merge_dup_hook_for_test = NULL; /* restore for other tests */
+
+    ASSERT_FALSE(ok); /* failure is signalled, not silent */
+    /* dst unchanged: its own pattern still matches, and the partially copied
+     * src patterns were rolled back. */
+    ASSERT_TRUE(cbm_gitignore_matches(dst, "x.log", false));
+    ASSERT_FALSE(cbm_gitignore_matches(dst, "a", true));
+    ASSERT_FALSE(cbm_gitignore_matches(dst, "b", true));
+
+    cbm_gitignore_free(src);
+    cbm_gitignore_free(dst);
+    PASS();
+}
+
 /* ── Suite ─────────────────────────────────────────────────────── */
 
 SUITE(gitignore) {
@@ -253,4 +297,5 @@ SUITE(gitignore) {
     RUN_TEST(gi_merge_patterns);
     RUN_TEST(gi_merge_into_empty);
     RUN_TEST(gi_merge_null_safe);
+    RUN_TEST(gi_merge_atomic_on_alloc_failure);
 }

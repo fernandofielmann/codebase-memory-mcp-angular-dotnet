@@ -563,7 +563,10 @@ int cbm_discover_ex(const char *repo_path, const cbm_discover_opts_t *opts, cbm_
             if (!gitignore) {
                 gitignore = git_exclude;
             } else {
-                cbm_gitignore_merge(gitignore, git_exclude);
+                /* On allocation failure the merge is atomic (dst unchanged), so
+                 * the .gitignore patterns still apply; the exclude patterns are
+                 * simply skipped — same as if .git/info/exclude were absent. */
+                (void)cbm_gitignore_merge(gitignore, git_exclude);
                 cbm_gitignore_free(git_exclude);
             }
         }

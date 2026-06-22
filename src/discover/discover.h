@@ -60,8 +60,11 @@ void cbm_gitignore_free(cbm_gitignore_t *gi);
 
 /* Append all patterns from src into dst. dst takes ownership of deep copies
  * of each src pattern; src is unchanged and must still be freed by the caller.
- * NULL-safe on either argument. */
-void cbm_gitignore_merge(cbm_gitignore_t *dst, const cbm_gitignore_t *src);
+ * NULL-safe on either argument.
+ * Returns true on success (or when there is nothing to merge). Returns false on
+ * allocation failure, in which case dst is left exactly as it was (atomic) — no
+ * partial merge — so a failed merge degrades to "as if src was absent". */
+bool cbm_gitignore_merge(cbm_gitignore_t *dst, const cbm_gitignore_t *src);
 
 /* ── Directory skip / suffix filters ─────────────────────────────── */
 
