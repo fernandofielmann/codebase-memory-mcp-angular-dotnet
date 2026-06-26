@@ -55,9 +55,12 @@ jobs:
             cc: cc
             cxx: c++
     runs-on: ${{ matrix.os }}
-    # duration + 60 min headroom. On push (no inputs) duration defaults to 240,
-    # so the budget is 300 min — NOT the 30 min that silently truncated nightly.
-    timeout-minutes: ${{ fromJSON(inputs.duration_minutes || '240') + 60 }}
+    # Fixed budget (NOT the 30 min that silently truncated nightly). 320 min covers
+    # the 240-min default soak + build + analysis. `timeout-minutes` is evaluated at
+    # workflow setup where the `inputs` context is null on push events, so an
+    # inputs-based expression here is a startup failure — keep it a literal.
+    # (A workflow_dispatch run with duration > ~250 min should bump this.)
+    timeout-minutes: 320
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
