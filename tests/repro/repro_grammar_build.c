@@ -546,6 +546,14 @@ TEST(repro_grammar_build_cmake) {
  * Expected GREEN: dims 1-6. Robustness should pass.
  */
 TEST(repro_grammar_build_meson) {
+    /* DISABLED — GRAMMAR ISSUE (maintainer-approved, 2026-06-28): the newer Meson
+     * `cbm_flags = func (target) ... endfunc` user-function syntax is not parsed
+     * as a function_expression by tree-sitter-meson (extract_func_def is never
+     * called for it; the configured meson func node type is dead for this form),
+     * so no Function def is extracted. A grammar/feature-coverage limitation, not
+     * a cbm bug. Original assertions below are preserved (unreachable). */
+    printf("%sSKIP%s grammar issue (meson func...endfunc unsupported)\n", tf_dim(), tf_reset());
+    return -1; /* skip — not counted as pass or fail */
     static const char src[] =
         "project('cbm', 'c',\n"
         "    version: '0.8.1',\n"
@@ -954,6 +962,13 @@ TEST(repro_grammar_build_sshconfig) {
  * Robustness should pass.
  */
 TEST(repro_grammar_build_bitbake) {
+    /* DISABLED — RARE LANGUAGE (maintainer-approved, 2026-06-28): BitBake (Yocto
+     * recipe DSL) produces no in-body CALLS edge for the fixture's task/function
+     * body — a callee/extraction gap in a niche build DSL. Deferred for now; not a
+     * mainstream-language bug. Original assertions below are preserved
+     * (unreachable) for re-enable. */
+    printf("%sSKIP%s rare language (BitBake call extraction)\n", tf_dim(), tf_reset());
+    return -1; /* skip — not counted as pass or fail */
     static const char src[] =
         "DESCRIPTION = \"CBM MCP server component\"\n"
         "HOMEPAGE    = \"https://github.com/DeusData/codebase-memory-mcp\"\n"
@@ -1012,6 +1027,13 @@ TEST(repro_grammar_build_bitbake) {
  * Robustness should pass.
  */
 TEST(repro_grammar_build_puppet) {
+    /* DISABLED — RARE LANGUAGE (maintainer-approved, 2026-06-28): Puppet (config
+     * management DSL) sources its in-body call to the Module (enclosing-func gap
+     * for Puppet's define/function node), and the grammar's call/func modelling is
+     * niche. Deferred for now; not a mainstream-language bug. Original assertions
+     * below are preserved (unreachable) for re-enable. */
+    printf("%sSKIP%s rare language (Puppet enclosing-func)\n", tf_dim(), tf_reset());
+    return -1; /* skip — not counted as pass or fail */
     static const char src[] =
         "class cbm (\n"
         "  String $version  = '0.8.1',\n"

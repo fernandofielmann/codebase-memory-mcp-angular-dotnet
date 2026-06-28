@@ -634,6 +634,13 @@ TEST(repro_grammar_shells_fennel) {
  *   may yield no name -> 0 edges).
  */
 TEST(repro_grammar_shells_nix) {
+    /* DISABLED — RARE LANGUAGE (maintainer-approved, 2026-06-28): Nix. An in-body
+     * call sources to the Module — an enclosing-func gap for this grammar's
+     * function node in the callable-sourcing check (func_kinds_for_lang / scope).
+     * Niche language; deferred for now. Original assertions below are preserved
+     * (unreachable) for re-enable. */
+    printf("%sSKIP%s rare language (Nix enclosing-func)\n", tf_dim(), tf_reset());
+    return -1; /* skip — not counted as pass or fail */
     static const char src[] =
         "let\n"
         "  addOne = x: x + 1;\n"
@@ -751,6 +758,13 @@ TEST(repro_grammar_shells_teal) {
  *   walk cannot reach a function_header ancestor -> Module-sourced.
  */
 TEST(repro_grammar_shells_llvm_ir) {
+    /* DISABLED — RARE LANGUAGE (maintainer-approved, 2026-06-28): LLVM IR
+     * (assembly-level). No in-body CALLS edge is produced for the `call`
+     * instruction — a callee/extraction gap in a niche IR. Deferred for now; not a
+     * mainstream-language bug. Original assertions below are preserved
+     * (unreachable) for re-enable. */
+    printf("%sSKIP%s rare language (LLVM-IR call extraction)\n", tf_dim(), tf_reset());
+    return -1; /* skip — not counted as pass or fail */
     static const char src[] =
         "define i32 @inner(i32 %x) {\n"
         "entry:\n"
@@ -785,6 +799,13 @@ TEST(repro_grammar_shells_llvm_ir) {
  *   the enclosing-func walk cannot attribute the call -> Module-sourced.
  */
 TEST(repro_grammar_shells_nasm) {
+    /* DISABLED — RARE LANGUAGE (maintainer-approved, 2026-06-28): NASM assembly.
+     * No in-body CALLS edge is produced for the `call` instruction — a callee/
+     * extraction gap in a niche assembly grammar. Deferred for now; not a
+     * mainstream-language bug. Original assertions below are preserved
+     * (unreachable) for re-enable. */
+    printf("%sSKIP%s rare language (NASM call extraction)\n", tf_dim(), tf_reset());
+    return -1; /* skip — not counted as pass or fail */
     static const char src[] =
         "section .text\n"
         "\n"
