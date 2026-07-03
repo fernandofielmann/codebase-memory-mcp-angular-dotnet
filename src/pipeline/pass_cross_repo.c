@@ -136,7 +136,7 @@ static void insert_cross_edge(cbm_store_t *store, const char *project, int64_t f
 
 /* Strip "scheme://host[:port]" from a stored HTTP_CALLS url, returning the
  * path. url_path property values are stored raw from the call's first string
- * argument, so they can be full URLs ("http://svc:8080/v2/x") — and
+ * argument, so they can be full URLs ("scheme://host:port/v2/x") — and
  * cbm_route_canon_path only canonicalizes placeholder syntax, never strips
  * authorities. Returns "/" for a URL with no path after the host (a request
  * against the bare base URL targets the root route). (#523) */
