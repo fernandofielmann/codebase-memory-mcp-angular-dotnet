@@ -75,6 +75,11 @@ const char *cbm_confidence_band(double score) {
 typedef CBM_DYN_ARRAY(char *) qn_array_t;
 
 struct cbm_registry {
+    /* Interned label strings (<=~30 distinct labels; owned here, freed in
+     * _free). The exact map's VALUES point into this pool instead of one
+     * strdup per registered definition (~8.5M strdups on the kernel). */
+    char *label_pool[64];
+    int label_pool_n;
     /* exact: qualifiedName → label string (heap-owned copies) */
     CBMHashTable *exact;
 
@@ -464,17 +469,15 @@ cbm_registry_t *cbm_registry_new(void) {
 
 static void free_label(const char *key, void *value, void *ud) {
     (void)ud;
+    (void)value; /* interned in the registry's label_pool */
     free((void *)key);
-    free(value);
 }
 
 static void free_qn_array(const char *key, void *value, void *ud) {
     (void)ud;
     qn_array_t *arr = value;
     if (arr) {
-        for (int i = 0; i < arr->count; i++) {
-            free(arr->items[i]);
-        }
+        /* items borrow the exact map's keys — freed there, not here */
         cbm_da_free(arr);
         free(arr);
     }
@@ -485,10 +488,14 @@ void cbm_registry_free(cbm_registry_t *r) {
     if (!r) {
         return;
     }
-    cbm_ht_foreach(r->exact, free_label, NULL);
-    cbm_ht_free(r->exact);
+    /* by_name first: its items borrow exact's keys. */
     cbm_ht_foreach(r->by_name, free_qn_array, NULL);
     cbm_ht_free(r->by_name);
+    cbm_ht_foreach(r->exact, free_label, NULL);
+    cbm_ht_free(r->exact);
+    for (int i = 0; i < r->label_pool_n; i++) {
+        free(r->label_pool[i]);
+    }
     free(r);
 }
 
@@ -506,8 +513,28 @@ void cbm_registry_add(cbm_registry_t *r, const char *name, const char *qualified
         return;
     }
 
-    /* Store in exact map: QN → label */
-    cbm_ht_set(r->exact, strdup(qualified_name), strdup(label));
+    /* Intern the label (bounded set; linear scan is fine at this size). */
+    const char *interned = NULL;
+    for (int i = 0; i < r->label_pool_n; i++) {
+        if (strcmp(r->label_pool[i], label) == 0) {
+            interned = r->label_pool[i];
+            break;
+        }
+    }
+    if (!interned && r->label_pool_n < (int)(sizeof(r->label_pool) / sizeof(r->label_pool[0]))) {
+        r->label_pool[r->label_pool_n] = strdup(label);
+        interned = r->label_pool[r->label_pool_n];
+        r->label_pool_n++;
+    }
+    if (!interned) {
+        return; /* pool exhausted (cannot happen with sane label sets) */
+    }
+
+    /* Store in exact map: QN → interned label. The key is the registry's ONE
+     * owned copy of the QN; by_name below borrows it (same lifetime) instead
+     * of a second strdup — this pair of copies was ~280 MB on the kernel. */
+    cbm_ht_set(r->exact, strdup(qualified_name), (void *)interned);
+    const char *owned_qn = cbm_ht_get_key(r->exact, qualified_name);
 
     /* Index by simple name.
      * No array dedup needed: exact-map check above guarantees uniqueness. */
@@ -517,7 +544,7 @@ void cbm_registry_add(cbm_registry_t *r, const char *name, const char *qualified
         arr = calloc(CBM_ALLOC_ONE, sizeof(qn_array_t));
         cbm_ht_set(r->by_name, strdup(simple), arr);
     }
-    cbm_da_push(arr, strdup(qualified_name));
+    cbm_da_push(arr, (char *)owned_qn);
 }
 
 /* ── Lookup ──────────────────────────────────────────────────────── */

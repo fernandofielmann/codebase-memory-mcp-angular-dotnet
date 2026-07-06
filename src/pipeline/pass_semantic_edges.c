@@ -17,6 +17,7 @@
 #include "semantic/semantic.h"
 #include "semantic/ast_profile.h"
 #include "simhash/minhash.h"
+#include "foundation/hash_table.h"
 #include "foundation/log.h"
 #include "foundation/compat.h"
 #define XXH_INLINE_ALL
@@ -600,10 +601,14 @@ typedef struct {
     int *token_counts;                 /* output: token count per function */
     int func_count;
     _Atomic int next_idx;
+    /* Per-worker token intern pools (key==value==the one owned strdup):
+     * identical tokens ("xfs", "error", ...) recur across hundreds of
+     * thousands of functions; per-func strdups made all_tokens hold every
+     * instance. Interned, it holds at most workers x unique tokens. */
+    CBMHashTable **pools;
 } tokenize_ctx_t;
 
 static void tokenize_worker(int worker_id, void *ctx_ptr) {
-    (void)worker_id;
     tokenize_ctx_t *tc = ctx_ptr;
     while (true) {
         int f = atomic_fetch_add_explicit(&tc->next_idx, SKIP_ONE, memory_order_relaxed);
@@ -619,6 +624,18 @@ static void tokenize_worker(int worker_id, void *ctx_ptr) {
         char **dst = &tc->all_tokens[(ptrdiff_t)f * CBM_SEM_MAX_TOKENS];
         int count = tokenize_node(n, tc->gbuf, dst, CBM_SEM_MAX_TOKENS);
         count = inject_pattern_tokens(n, tc->gbuf, dst, count, CBM_SEM_MAX_TOKENS);
+        if (tc->pools && tc->pools[worker_id]) {
+            CBMHashTable *pool = tc->pools[worker_id];
+            for (int t = 0; t < count; t++) {
+                char *canon = cbm_ht_get(pool, dst[t]);
+                if (canon) {
+                    free(dst[t]);
+                    dst[t] = canon;
+                } else {
+                    cbm_ht_set(pool, dst[t], dst[t]); /* key borrows the value */
+                }
+            }
+        }
         tc->token_counts[f] = count;
     }
 }
@@ -1144,13 +1161,15 @@ static void phase1b_decode_and_build(cbm_sem_func_t *funcs, const cbm_gbuf_node_
 /* Phase 2: tokenize each function's metadata in parallel, filling
  * all_tokens[] and token_counts[].  Caller allocates the arrays. */
 static void phase2_tokenize(const cbm_gbuf_node_t **node_ptrs, cbm_gbuf_t *gbuf, char **all_tokens,
-                            int *token_counts, int func_count, int worker_count) {
+                            int *token_counts, int func_count, int worker_count,
+                            CBMHashTable **pools) {
     tokenize_ctx_t tc = {
         .node_ptrs = node_ptrs,
         .gbuf = gbuf,
         .all_tokens = all_tokens,
         .token_counts = token_counts,
         .func_count = func_count,
+        .pools = pools,
     };
     atomic_init(&tc.next_idx, 0);
     cbm_parallel_for_opts_t opts = {.max_workers = worker_count, .force_pthreads = false};
@@ -1307,18 +1326,33 @@ static int run_scoring_phase(cbm_gbuf_t *gbuf, cbm_sem_func_t *funcs, uint64_t *
 }
 
 /* Free the per-function arrays malloc'd during phases 1b and 4a. */
+static void free_token_pool_entry(const char *key, void *value, void *ud) {
+    (void)key; /* key == value: one owned string per unique token */
+    (void)ud;
+    free(value);
+}
+
+/* all_tokens slots BORROW their strings from the per-worker intern pools;
+ * the pools own exactly one copy per unique token per worker. */
 static void free_funcs_and_tokens(cbm_sem_func_t *funcs, int func_count, char **all_tokens,
-                                  const int *token_counts) {
+                                  const int *token_counts, CBMHashTable **pools,
+                                  int worker_count) {
+    (void)token_counts;
     for (int f = 0; f < func_count; f++) {
         free(funcs[f].tfidf_indices);
         free(funcs[f].tfidf_weights);
-        int tc = token_counts[f];
-        for (int t = 0; t < tc; t++) {
-            free(all_tokens[((ptrdiff_t)f * CBM_SEM_MAX_TOKENS) + t]);
-        }
     }
     free(all_tokens);
     free(funcs);
+    if (pools) {
+        for (int w = 0; w < worker_count; w++) {
+            if (pools[w]) {
+                cbm_ht_foreach(pools[w], free_token_pool_entry, NULL);
+                cbm_ht_free(pools[w]);
+            }
+        }
+        free(pools);
+    }
 }
 
 /* ── Pass entry point ────────────────────────────────────────────── */
@@ -1356,7 +1390,14 @@ int cbm_pipeline_pass_semantic_edges(cbm_pipeline_ctx_t *ctx) {
     int *token_counts = calloc((size_t)func_count, sizeof(int));
 
     CBM_PROF_START(t_phase2);
-    phase2_tokenize(node_ptrs, gbuf, all_tokens, token_counts, func_count, worker_count);
+    CBMHashTable **token_pools = calloc((size_t)worker_count, sizeof(CBMHashTable *));
+    if (token_pools) {
+        for (int w = 0; w < worker_count; w++) {
+            token_pools[w] = cbm_ht_create(CBM_SZ_1K);
+        }
+    }
+    phase2_tokenize(node_ptrs, gbuf, all_tokens, token_counts, func_count, worker_count,
+                    token_pools);
     CBM_PROF_END_N("semantic_edges", "2_tokenize_parallel", t_phase2, func_count);
     free(node_ptrs);
 
@@ -1391,7 +1432,8 @@ int cbm_pipeline_pass_semantic_edges(cbm_pipeline_ctx_t *ctx) {
     free_lsh_buckets(band_buckets);
     free(signatures);
     cbm_log_info("pass.done", "pass", "semantic_edges", "edges", itoa_log(total_edges));
-    free_funcs_and_tokens(funcs, func_count, all_tokens, token_counts);
+    free_funcs_and_tokens(funcs, func_count, all_tokens, token_counts, token_pools,
+                          worker_count);
     free(token_counts);
     cbm_sem_corpus_free(corpus);
     CBM_PROF_END("semantic_edges", "7_cleanup", t_phase7);
