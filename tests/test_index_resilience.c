@@ -20,6 +20,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <limits.h>
+
+/* glibc's _FORTIFY_SOURCE realpath() aborts unless the output buffer is at
+ * least PATH_MAX bytes, independent of the actual path length. */
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
 
 /* Sleep before rewriting a fixture so its mtime_ns strictly increases and the
  * incremental change classifier reliably sees the edit (10 ms). */
@@ -661,6 +668,12 @@ TEST(index_not_indexed_by_design_reported) {
  * "root"), an absolute stored root_path, and a DB that persists and stays
  * queryable after the run. */
 TEST(index_relative_repo_path_canonicalized) {
+#ifdef _WIN32
+    /* realpath/chdir are POSIX; the assertions are POSIX-path-shaped. The
+     * #794 canonicalization logic under guard is platform-independent, so
+     * the four Unix legs carry this regression guard. */
+    SKIP_PLATFORM("POSIX-only guard (realpath/chdir); #794 logic is platform-independent");
+#else
     RProj lp;
     memset(&lp, 0, sizeof(lp));
     snprintf(lp.tmpdir, sizeof(lp.tmpdir), "/tmp/cbm_resil_XXXXXX");
@@ -672,7 +685,7 @@ TEST(index_relative_repo_path_canonicalized) {
 
     /* Resolve the canonical form of tmpdir (macOS: /tmp -> /private/tmp) so
      * the derived-name and stored-root assertions compare like with like. */
-    char canon[700];
+    char canon[PATH_MAX];
     if (!realpath(lp.tmpdir, canon)) {
         snprintf(canon, sizeof(canon), "%s", lp.tmpdir);
     }
@@ -697,7 +710,7 @@ TEST(index_relative_repo_path_canonicalized) {
     }
 
     /* chdir into the repo and index "." — restore cwd immediately after. */
-    char oldcwd[700];
+    char oldcwd[PATH_MAX];
     if (!getcwd(oldcwd, sizeof(oldcwd))) {
         FAIL("getcwd failed");
     }
@@ -745,6 +758,7 @@ TEST(index_relative_repo_path_canonicalized) {
 
     rh_cleanup(&lp, store);
     PASS();
+#endif /* !_WIN32 */
 }
 
 SUITE(index_resilience) {
