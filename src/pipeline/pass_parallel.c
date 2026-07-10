@@ -1786,6 +1786,9 @@ static bool normalize_url_arg(const char *url, char *norm, int norm_sz) {
 /* Detect API paths in call arguments and create HTTP_CALLS edges. */
 static void detect_url_in_args(cbm_gbuf_t *gbuf, const cbm_gbuf_node_t *source,
                                const CBMCall *call) {
+    if (call->asset_path) {
+        return;
+    }
     for (int ai = 0; ai < call->arg_count; ai++) {
         const CBMCallArg *ca = &call->args[ai];
         const char *url = ca->value ? ca->value : ca->expr;
@@ -2005,7 +2008,8 @@ static void emit_service_edge(cbm_gbuf_t *gbuf, const cbm_gbuf_node_t *source,
 
     /* Also detect route registration by callee name suffix alone (handles unresolved
      * local variables like app.include_router where QN resolution fails). */
-    if (svc == CBM_SVC_NONE && cbm_service_pattern_route_method(call->callee_name) != NULL) {
+    if (svc == CBM_SVC_NONE && !call->asset_path &&
+        cbm_service_pattern_route_method(call->callee_name) != NULL) {
         svc = CBM_SVC_ROUTE_REG;
     }
 
@@ -2135,6 +2139,12 @@ static void lsp_idx_free_key(const char *key, void *value, void *ud) {
     free((char *)key);
 }
 
+static bool call_is_angular_http_client(const CBMCall *call) {
+    static const char prefix[] = "@angular/common/http.HttpClient.";
+    return call && call->callee_name &&
+           strncmp(call->callee_name, prefix, sizeof(prefix) - SKIP_ONE) == 0;
+}
+
 /* Resolve calls for one file and emit CALLS/HTTP_CALLS/ASYNC_CALLS edges. */
 static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CBMFileResult *result,
                                const char *rel, const char *module_qn, const char **imp_keys,
@@ -2191,6 +2201,11 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
         atomic_fetch_add_explicit(&rc->time_ns_rc_source, extract_now_ns() - _rc_t0,
                                   memory_order_relaxed);
         if (!source_node) {
+            continue;
+        }
+
+        if (call->asset_path && call_is_angular_http_client(call)) {
+            cbm_gbuf_emit_asset_load(ws->local_edge_buf, source_node, call);
             continue;
         }
 
@@ -2306,13 +2321,15 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
         }
 
         if (!res.qualified_name || res.qualified_name[0] == '\0') {
-            if (cbm_service_pattern_route_method(call->callee_name) != NULL) {
+            if (!call->asset_path && cbm_service_pattern_route_method(call->callee_name) != NULL) {
                 cbm_resolution_t fake_res = {.qualified_name = call->callee_name,
                                              .confidence = PP_HALF_CONF,
                                              .strategy = "callee_suffix"};
                 emit_service_edge(ws->local_edge_buf, source_node, source_node, call, &fake_res,
                                   module_qn, rc->registry, rc->main_gbuf, imp_keys, imp_vals,
                                   imp_count, false);
+            } else if (call->asset_path && cbm_service_pattern_is_global_fetch(call->callee_name)) {
+                cbm_gbuf_emit_asset_load(ws->local_edge_buf, source_node, call);
             } else if (cbm_service_pattern_is_global_fetch(call->callee_name)) {
                 /* Native `fetch()` (#856): only the global API once resolution
                  * has failed to find a local/imported `fetch`. Call the low-level

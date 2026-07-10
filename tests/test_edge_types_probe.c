@@ -234,6 +234,148 @@ static int et_routes_exact(const EtFile *files, int nfiles, const char **routes)
     return ok;
 }
 
+static const EtFile ET_ASSET_FILES[] = {
+    {"asset.service.ts",
+     "import { HttpClient } from '@angular/common/http';\n"
+     "import { inject } from '@angular/core';\n\n"
+     "export class AssetLoader {\n"
+     "  private http = inject(HttpClient);\n"
+     "  loadTranslation(lang: string) {\n"
+     "    return this.http.get(`/assets/i18n/${lang}.json?cache=1`);\n"
+     "  }\n"
+     "}\n\n"
+     "export class ApiService {\n"
+     "  constructor(private http: HttpClient) {}\n"
+     "  loadOrders() { return this.http.get('/api/v1/orders'); }\n"
+     "}\n\n"
+     "export class LocalService {\n"
+     "  constructor(private client: LocalClient) {}\n"
+     "  loadFakeAsset() { return this.client.get('/assets/not-http.json'); }\n"
+     "}\n\n"
+     "export function fetchManifest() { return fetch('./assets/config/app.json#v1'); }\n"
+     "export function fetchBackend() { return fetch('/api/native'); }\n"
+     "export function fetchMember(repo: Repository) {\n"
+     "  return repo.fetch('/assets/member.json');\n"
+     "}\n"
+     "export function readFromDisk() { return readFile('/assets/disk.json'); }\n"}};
+
+static cbm_store_t *et_index_parallel(EtProj *lp, const EtFile *meaningful, int n_mean);
+
+static int et_asset_model_ok(bool parallel) {
+    EtProj lp;
+    cbm_store_t *store = parallel ? et_index_parallel(&lp, ET_ASSET_FILES, 1)
+                                  : et_index_files(&lp, ET_ASSET_FILES, 1);
+    cbm_node_t *assets = NULL;
+    int asset_count = 0;
+    int ok = store != NULL;
+    int loads = store ? cbm_store_count_edges_by_type(store, lp.project, "LOADS_ASSET") : -1;
+    int http = store ? cbm_store_count_edges_by_type(store, lp.project, "HTTP_CALLS") : -1;
+    if (!store || cbm_store_find_nodes_by_label(store, lp.project, "Asset", &assets,
+                                                &asset_count) != CBM_STORE_OK) {
+        ok = 0;
+    }
+    if (asset_count != 2 || loads != 2 || http != 2) {
+        ok = 0;
+    }
+
+    bool translation_found = false;
+    bool manifest_found = false;
+    for (int i = 0; i < asset_count; i++) {
+        const char *name = assets[i].name ? assets[i].name : "";
+        if (strcmp(name, "/assets/i18n/{}.json") == 0) {
+            translation_found = true;
+        } else if (strcmp(name, "/assets/config/app.json") == 0) {
+            manifest_found = true;
+        }
+        if (!assets[i].properties_json ||
+            strstr(assets[i].properties_json, "\"extension\":\"json\"") == NULL ||
+            strstr(assets[i].properties_json, "\"asset_type\":\"data\"") == NULL) {
+            ok = 0;
+        }
+    }
+    if (!translation_found || !manifest_found) {
+        ok = 0;
+    }
+
+    cbm_node_t *routes = NULL;
+    int route_count = 0;
+    if (!store ||
+        cbm_store_find_nodes_by_label(store, lp.project, "Route", &routes, &route_count) !=
+            CBM_STORE_OK ||
+        route_count != 2) {
+        ok = 0;
+    }
+    for (int i = 0; i < route_count; i++) {
+        if (routes[i].name && strstr(routes[i].name, "/assets/")) {
+            ok = 0;
+        }
+    }
+
+    cbm_node_t *consumers = NULL;
+    int consumer_count = 0;
+    if (!store ||
+        cbm_store_find_nodes_by_name(store, lp.project, "loadTranslation", &consumers,
+                                     &consumer_count) != CBM_STORE_OK ||
+        consumer_count != 1) {
+        ok = 0;
+    } else {
+        char args[1024];
+        snprintf(args, sizeof(args),
+                 "{\"qualified_name\":\"%s\",\"project\":\"%s\",\"include_neighbors\":true}",
+                 consumers[0].qualified_name, lp.project);
+        char *snippet = cbm_mcp_handle_tool(lp.srv, "get_code_snippet", args);
+        if (!snippet || strstr(snippet, "/assets/i18n/{}.json") == NULL) {
+            ok = 0;
+        }
+        free(snippet);
+
+        snprintf(args, sizeof(args),
+                 "{\"function_name\":\"loadTranslation\",\"project\":\"%s\","
+                 "\"direction\":\"outbound\",\"mode\":\"cross_service\"}",
+                 lp.project);
+        char *cross = cbm_mcp_handle_tool(lp.srv, "trace_path", args);
+        if (!cross || strstr(cross, "/assets/i18n/{}.json") != NULL) {
+            ok = 0;
+        }
+        free(cross);
+
+        snprintf(args, sizeof(args),
+                 "{\"function_name\":\"loadTranslation\",\"project\":\"%s\","
+                 "\"direction\":\"outbound\",\"edge_types\":[\"LOADS_ASSET\"]}",
+                 lp.project);
+        char *explicit_trace = cbm_mcp_handle_tool(lp.srv, "trace_path", args);
+        if (!explicit_trace || strstr(explicit_trace, "/assets/i18n/{}.json") == NULL) {
+            ok = 0;
+        }
+        free(explicit_trace);
+    }
+
+    if (asset_count > 0) {
+        char args[1024];
+        snprintf(args, sizeof(args), "{\"qualified_name\":\"%s\",\"project\":\"%s\"}",
+                 assets[0].qualified_name, lp.project);
+        char *snippet = cbm_mcp_handle_tool(lp.srv, "get_code_snippet", args);
+        if (!snippet || strstr(snippet, "assets/") == NULL) {
+            ok = 0;
+        }
+        free(snippet);
+    }
+
+    if (!ok) {
+        fprintf(stderr,
+                "  [ET-ASSET] FAIL parallel=%d assets=%d loads=%d http=%d routes=%d consumers=%d\n",
+                parallel ? 1 : 0, asset_count, loads, http, route_count, consumer_count);
+        for (int i = 0; i < route_count; i++) {
+            fprintf(stderr, "  [ET-ASSET] route=%s\n", routes[i].name ? routes[i].name : "<null>");
+        }
+    }
+    cbm_store_free_nodes(consumers, consumer_count);
+    cbm_store_free_nodes(routes, route_count);
+    cbm_store_free_nodes(assets, asset_count);
+    et_cleanup(&lp, store);
+    return ok;
+}
+
 /* Index meaningful[] plus PARALLEL_PAD_FILES trivial pad files to force the
  * parallel pipeline path (MIN_FILES_FOR_PARALLEL = 50). */
 enum { ET_PARALLEL_PAD = 52, ET_PAD_MAX = 68 /* 52 pad + 16 meaningful */ };
@@ -630,6 +772,16 @@ TEST(http_calls_angular_http_wrapper_ts) {
          "}\n"}};
     ASSERT_TRUE(et_edge_present(f, 1, "HTTP_CALLS", 1));
     ASSERT_TRUE(et_routes_exact(f, 1, routes));
+    PASS();
+}
+
+TEST(frontend_assets_programmatic_sequential) {
+    ASSERT_TRUE(et_asset_model_ok(false));
+    PASS();
+}
+
+TEST(frontend_assets_programmatic_parallel) {
+    ASSERT_TRUE(et_asset_model_ok(true));
     PASS();
 }
 
@@ -1679,6 +1831,8 @@ SUITE(edge_types_probe) {
     RUN_TEST(http_calls_axios_ts);
     RUN_TEST(http_calls_angular_httpclient_ts);
     RUN_TEST(http_calls_angular_http_wrapper_ts);
+    RUN_TEST(frontend_assets_programmatic_sequential);
+    RUN_TEST(frontend_assets_programmatic_parallel);
     RUN_TEST(http_calls_angular_aspnet_case_insensitive_convergence);
     RUN_TEST(http_calls_angular_aspnet_convergence_parallel);
     RUN_TEST(http_calls_non_aspnet_routes_remain_case_sensitive);
