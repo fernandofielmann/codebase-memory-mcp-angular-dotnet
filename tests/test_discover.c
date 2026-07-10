@@ -46,6 +46,16 @@ static bool discover_has_rel_path(const cbm_file_info_t *files, int count, const
     return false;
 }
 
+static bool discover_ignored_contains(const cbm_ignored_file_t *ignored, int count,
+                                      const char *rel_path, const char *reason) {
+    for (int i = 0; i < count; i++) {
+        if (strcmp(ignored[i].rel_path, rel_path) == 0 && strcmp(ignored[i].reason, reason) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* ── Directory skip (always skipped) ───────────────────────────── */
 
 TEST(skip_git) {
@@ -195,6 +205,14 @@ TEST(suffix_tilde) {
     ASSERT_TRUE(cbm_has_ignored_suffix("file~", CBM_MODE_FULL));
     PASS();
 }
+TEST(suffix_minified_all_modes) {
+    const cbm_index_mode_t modes[] = {CBM_MODE_FULL, CBM_MODE_MODERATE, CBM_MODE_FAST};
+    for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
+        ASSERT_TRUE(cbm_has_ignored_suffix("vendor.bundle.min.js", modes[i]));
+        ASSERT_TRUE(cbm_has_ignored_suffix("theme.min.css", modes[i]));
+    }
+    PASS();
+}
 
 /* Not ignored */
 TEST(suffix_go) {
@@ -323,6 +341,44 @@ TEST(discover_simple) {
     ASSERT_TRUE(found_py);
 
     cbm_discover_free(files, count);
+    th_cleanup(base);
+    PASS();
+}
+
+TEST(discover_minified_assets_ignored_all_modes) {
+    char *base = th_mktempdir("cbm_disc_minified");
+    ASSERT(base != NULL);
+
+    th_write_file(TH_PATH(base, "src/main.js"), "export function main() {}\n");
+    th_write_file(TH_PATH(base, "src/vendor.bundle.min.js"), "function vendor() {}\n");
+    th_write_file(TH_PATH(base, "src/theme.min.css"), ".app { color: red; }\n");
+
+    const cbm_index_mode_t modes[] = {CBM_MODE_FULL, CBM_MODE_MODERATE, CBM_MODE_FAST};
+    for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
+        cbm_discover_opts_t opts = {.mode = modes[i]};
+        cbm_file_info_t *files = NULL;
+        cbm_ignored_file_t *ignored = NULL;
+        int count = 0;
+        int ignored_count = 0;
+        int ignored_total = 0;
+
+        int rc = cbm_discover_ex2(base, &opts, &files, &count, NULL, NULL, &ignored, &ignored_count,
+                                  &ignored_total);
+        ASSERT_EQ(rc, 0);
+        ASSERT_TRUE(discover_has_rel_path(files, count, "src/main.js"));
+        ASSERT_FALSE(discover_has_rel_path(files, count, "src/vendor.bundle.min.js"));
+        ASSERT_FALSE(discover_has_rel_path(files, count, "src/theme.min.css"));
+        ASSERT_EQ(ignored_count, 2);
+        ASSERT_EQ(ignored_total, 2);
+        ASSERT_TRUE(discover_ignored_contains(ignored, ignored_count, "src/vendor.bundle.min.js",
+                                              "ignored-suffix"));
+        ASSERT_TRUE(discover_ignored_contains(ignored, ignored_count, "src/theme.min.css",
+                                              "ignored-suffix"));
+
+        cbm_discover_free_ignored(ignored, ignored_count);
+        cbm_discover_free(files, count);
+    }
+
     th_cleanup(base);
     PASS();
 }
@@ -1090,8 +1146,10 @@ TEST(discover_git_info_exclude_stacks_with_gitignore) {
     bool found_log = false;
     bool found_scratch = false;
     for (int i = 0; i < count; i++) {
-        if (strstr(files[i].rel_path, ".log"))    found_log     = true;
-        if (strstr(files[i].rel_path, "scratch")) found_scratch = true;
+        if (strstr(files[i].rel_path, ".log"))
+            found_log = true;
+        if (strstr(files[i].rel_path, "scratch"))
+            found_scratch = true;
     }
     ASSERT_FALSE(found_log);
     ASSERT_FALSE(found_scratch);
@@ -1286,6 +1344,7 @@ SUITE(discover) {
     RUN_TEST(suffix_sqlite);
     RUN_TEST(suffix_tmp);
     RUN_TEST(suffix_tilde);
+    RUN_TEST(suffix_minified_all_modes);
     RUN_TEST(suffix_go);
     RUN_TEST(suffix_py);
     RUN_TEST(suffix_c);
@@ -1314,6 +1373,7 @@ SUITE(discover) {
 
     /* Integration tests (cross-platform) */
     RUN_TEST(discover_simple);
+    RUN_TEST(discover_minified_assets_ignored_all_modes);
     RUN_TEST(discover_skips_git_dir);
     RUN_TEST(discover_with_gitignore);
     RUN_TEST(discover_with_global_xdg_ignore);
