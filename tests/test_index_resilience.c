@@ -544,6 +544,8 @@ TEST(index_not_indexed_by_design_reported) {
     ri_write_text(lp.tmpdir, ".gitignore", "secret.py\ngenerated/\n");
     ri_write_text(lp.tmpdir, "good.py", "def alpha():\n    return 1\n");
     ri_write_text(lp.tmpdir, "secret.py", "def hidden():\n    return 42\n");
+    ri_write_text(lp.tmpdir, "vendor.bundle.min.js", "function vendorNoise() { return 42; }\n");
+    ri_write_text(lp.tmpdir, "theme.min.css", ".app { color: red; }\n");
     char gen_dir[700];
     snprintf(gen_dir, sizeof(gen_dir), "%s/generated", lp.tmpdir);
     cbm_mkdir(gen_dir);
@@ -569,13 +571,15 @@ TEST(index_not_indexed_by_design_reported) {
     ASSERT_EQ(yyjson_get_int(yyjson_obj_get(sc, "skipped_count")), 0);
     ASSERT_EQ(yyjson_get_int(yyjson_obj_get(sc, "parse_partial_count")), 0);
 
-    /* The gitignored FILE is listed with its reason + the by-design note. */
-    ASSERT_GTE(yyjson_get_int(yyjson_obj_get(sc, "not_indexed_files_count")), 1);
+    /* Gitignored and built-in minified files are listed as deliberate exclusions. */
+    ASSERT_GTE(yyjson_get_int(yyjson_obj_get(sc, "not_indexed_files_count")), 3);
     yyjson_val *ni = yyjson_obj_get(sc, "not_indexed_files");
     ASSERT_NOT_NULL(ni);
     yyjson_val *files = yyjson_obj_get(ni, "files");
     ASSERT_NOT_NULL(files);
     int found_secret = 0;
+    int found_min_js = 0;
+    int found_min_css = 0;
     size_t idx = 0;
     size_t fmax = 0;
     yyjson_val *fe = NULL;
@@ -586,9 +590,19 @@ TEST(index_not_indexed_by_design_reported) {
             found_secret = 1;
             ASSERT_NOT_NULL(reason);
             ASSERT_STR_EQ("gitignore", reason);
+        } else if (fp && strcmp(fp, "vendor.bundle.min.js") == 0) {
+            found_min_js = 1;
+            ASSERT_NOT_NULL(reason);
+            ASSERT_STR_EQ("ignored-suffix", reason);
+        } else if (fp && strcmp(fp, "theme.min.css") == 0) {
+            found_min_css = 1;
+            ASSERT_NOT_NULL(reason);
+            ASSERT_STR_EQ("ignored-suffix", reason);
         }
     }
     ASSERT_TRUE(found_secret);
+    ASSERT_TRUE(found_min_js);
+    ASSERT_TRUE(found_min_css);
     const char *note = yyjson_get_str(yyjson_obj_get(ni, "note"));
     ASSERT_NOT_NULL(note);
     ASSERT_NOT_NULL(strstr(note, "BY DESIGN"));
@@ -608,6 +622,9 @@ TEST(index_not_indexed_by_design_reported) {
     ASSERT_NOT_NULL(sresp);
     ASSERT_NOT_NULL(strstr(sresp, "not_indexed"));
     ASSERT_NOT_NULL(strstr(sresp, "secret.py"));
+    ASSERT_NOT_NULL(strstr(sresp, "vendor.bundle.min.js"));
+    ASSERT_NOT_NULL(strstr(sresp, "theme.min.css"));
+    ASSERT_NOT_NULL(strstr(sresp, "ignored-suffix"));
     ASSERT_NOT_NULL(strstr(sresp, "generated"));
     ASSERT_NOT_NULL(strstr(sresp, "BY DESIGN"));
     free(sresp);
@@ -634,6 +651,8 @@ TEST(index_not_indexed_by_design_reported) {
     char *sresp2 = cbm_mcp_handle_tool(lp.srv, "index_status", qargs);
     ASSERT_NOT_NULL(sresp2);
     ASSERT_NOT_NULL(strstr(sresp2, "secret.py"));
+    ASSERT_NOT_NULL(strstr(sresp2, "vendor.bundle.min.js"));
+    ASSERT_NOT_NULL(strstr(sresp2, "theme.min.css"));
     ASSERT_NOT_NULL(strstr(sresp2, "generated"));
     free(sresp2);
 

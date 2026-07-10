@@ -62,18 +62,17 @@ static const char *FAST_SKIP_DIRS[] = {
 /* ── Ignored suffixes ───────────────────────────────── */
 
 static const char *ALWAYS_IGNORED_SUFFIXES[] = {
-    ".tmp",    "~",        ".pyc",  ".pyo",   ".o",   ".a",   ".so",  ".dll",
-    ".class",  ".png",     ".jpg",  ".jpeg",  ".gif", ".ico", ".bmp", ".tiff",
-    ".webp",   ".svg",     ".wasm", ".node",  ".exe", ".bin", ".dat", ".db",
-    ".sqlite", ".sqlite3", ".woff", ".woff2", ".ttf", ".eot", ".otf", NULL};
+    ".tmp",   "~",     ".pyc",  ".pyo", ".o",      ".a",       ".so",     ".dll",     ".class",
+    ".png",   ".jpg",  ".jpeg", ".gif", ".ico",    ".bmp",     ".tiff",   ".webp",    ".svg",
+    ".wasm",  ".node", ".exe",  ".bin", ".dat",    ".db",      ".sqlite", ".sqlite3", ".woff",
+    ".woff2", ".ttf",  ".eot",  ".otf", ".min.js", ".min.css", NULL};
 
 static const char *FAST_IGNORED_SUFFIXES[] = {
-    ".zip", ".tar",  ".gz",       ".bz2",  ".xz",  ".rar",    ".7z",      ".jar",
-    ".war", ".ear",  ".mp3",      ".mp4",  ".avi", ".mov",    ".wav",     ".flac",
-    ".ogg", ".mkv",  ".webm",     ".pdf",  ".doc", ".docx",   ".xls",     ".xlsx",
-    ".ppt", ".pptx", ".odt",      ".ods",  ".map", ".min.js", ".min.css", ".pem",
-    ".crt", ".key",  ".cer",      ".p12",  ".pb",  ".avro",   ".parquet", ".beam",
-    ".elc", ".rlib", ".coverage", ".prof", ".out", ".patch",  ".diff",    NULL};
+    ".zip",      ".tar",  ".gz",  ".bz2",   ".xz",   ".rar",  ".7z",      ".jar",  ".war",  ".ear",
+    ".mp3",      ".mp4",  ".avi", ".mov",   ".wav",  ".flac", ".ogg",     ".mkv",  ".webm", ".pdf",
+    ".doc",      ".docx", ".xls", ".xlsx",  ".ppt",  ".pptx", ".odt",     ".ods",  ".map",  ".pem",
+    ".crt",      ".key",  ".cer", ".p12",   ".pb",   ".avro", ".parquet", ".beam", ".elc",  ".rlib",
+    ".coverage", ".prof", ".out", ".patch", ".diff", NULL};
 
 /* ── Fast-mode skip filenames ─────────────────────── */
 
