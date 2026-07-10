@@ -528,7 +528,8 @@ TEST(http_calls_angular_httpclient_ts) {
     static const char *routes[] = {"/api/v1/orders", "/api/v1/orders/{}", NULL};
     static const EtFile f[] = {
         {"order.service.ts",
-         "import { HttpClient } from '@angular/common/http';\n\n"
+         "import { HttpClient } from '@angular/common/http';\n"
+         "import { inject } from '@angular/core';\n\n"
          "export class OrderService {\n"
          "  constructor(private http: HttpClient, private config: Config) {}\n"
          "  list() {\n"
@@ -537,6 +538,12 @@ TEST(http_calls_angular_httpclient_ts) {
          "  create(id: string, payload: unknown) {\n"
          "    const apiUrl = `${this.config.baseUrl}/api/v1/orders/${id}?notify=true`;\n"
          "    return this.http.post(apiUrl, payload);\n"
+         "  }\n"
+         "}\n\n"
+         "export class TranslationLoader {\n"
+         "  private http = inject(HttpClient);\n"
+         "  load(lang: string) {\n"
+         "    return this.http.get(`/assets/i18n/${lang}.json`);\n"
          "  }\n"
          "}\n"}};
     ASSERT_TRUE(et_edge_present(f, 1, "HTTP_CALLS", 2));

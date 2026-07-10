@@ -135,7 +135,8 @@ TEST(extract_ts_factory_object_methods_issue341) {
 
 TEST(extract_angular_httpclient_routes) {
     CBMFileResult *r =
-        extract("import { HttpClient, inject } from '@angular/common/http';\n"
+        extract("import { HttpClient } from '@angular/common/http';\n"
+                "import { inject } from '@angular/core';\n"
                 "class ApiService {\n"
                 "  constructor(private http: HttpClient, private config: Config) {}\n"
                 "  load(id: string) {\n"
@@ -150,6 +151,10 @@ TEST(extract_angular_httpclient_routes) {
                 "class LocalService {\n"
                 "  constructor(private http: LocalClient) {}\n"
                 "  load() { return this.http.get('/api/v1/local-only'); }\n"
+                "}\n"
+                "class AssetLoader {\n"
+                "  private http = inject(HttpClient);\n"
+                "  load(lang: string) { return this.http.get(`/assets/i18n/${lang}.json`); }\n"
                 "}\n",
                 CBM_LANG_TYPESCRIPT, "t", "api.service.ts");
     ASSERT_NOT_NULL(r);
@@ -157,6 +162,7 @@ TEST(extract_angular_httpclient_routes) {
     ASSERT(has_call_route(r, "HttpClient.get", "/api/v1/orders/{}"));
     ASSERT(has_call_route(r, "HttpClient.get", "/api/v1/features"));
     ASSERT_FALSE(has_call_route(r, "HttpClient.get", "/api/v1/local-only"));
+    ASSERT_FALSE(has_call_route(r, "HttpClient.get", "/assets/i18n/{}.json"));
     cbm_free_result(r);
     PASS();
 }

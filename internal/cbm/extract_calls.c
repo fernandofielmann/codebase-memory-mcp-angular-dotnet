@@ -1647,9 +1647,31 @@ static TSNode find_local_string_initializer(CBMExtractCtx *ctx, TSNode use_node,
     return best;
 }
 
+static bool is_typescript_static_asset_path(CBMExtractCtx *ctx, const char *raw) {
+    const char *path = strip_quotes(ctx->arena, raw);
+    if (!path) {
+        return false;
+    }
+    while (strncmp(path, "../", strlen("../")) == 0) {
+        path += strlen("../");
+    }
+    if (strncmp(path, "./", strlen("./")) == 0) {
+        path += strlen("./");
+    }
+    if (strncmp(path, "/assets", strlen("/assets")) == 0) {
+        char boundary = path[strlen("/assets")];
+        return boundary == '\0' || boundary == '/' || boundary == '?' || boundary == '#';
+    }
+    if (strncmp(path, "assets", strlen("assets")) == 0) {
+        char boundary = path[strlen("assets")];
+        return boundary == '\0' || boundary == '/' || boundary == '?' || boundary == '#';
+    }
+    return false;
+}
+
 static const char *normalize_typescript_route(CBMExtractCtx *ctx, const char *raw) {
     const char *text = strip_quotes(ctx->arena, raw);
-    if (!text) {
+    if (!text || is_typescript_static_asset_path(ctx, raw)) {
         return NULL;
     }
     const char *start = text;
@@ -1696,6 +1718,9 @@ static const char *extract_positional_url(CBMExtractCtx *ctx, TSNode arg, const 
     if (is_string_like(ak)) {
         char *text = cbm_node_text(ctx->arena, arg, ctx->source);
         if (is_typescript_language(ctx->language)) {
+            if (is_typescript_static_asset_path(ctx, text)) {
+                return NULL;
+            }
             const char *route = normalize_typescript_route(ctx, text);
             if (route) {
                 return route;
