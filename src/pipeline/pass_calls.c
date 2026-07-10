@@ -429,6 +429,12 @@ static const cbm_gbuf_node_t *calls_find_source(cbm_pipeline_ctx_t *ctx, const c
     return src;
 }
 
+static bool call_is_angular_http_client(const CBMCall *call) {
+    static const char prefix[] = "@angular/common/http.HttpClient.";
+    return call && call->callee_name &&
+           strncmp(call->callee_name, prefix, sizeof(prefix) - SKIP_ONE) == 0;
+}
+
 /* Resolve one call and emit the appropriate edge. Returns 1 if resolved, 0 if not. */
 static int resolve_single_call(cbm_pipeline_ctx_t *ctx, CBMCall *call,
                                const CBMResolvedCallArray *lsp_calls, const char *rel,
@@ -437,6 +443,11 @@ static int resolve_single_call(cbm_pipeline_ctx_t *ctx, CBMCall *call,
     const cbm_gbuf_node_t *source_node = calls_find_source(ctx, rel, call->enclosing_func_qn);
     if (!source_node) {
         return 0;
+    }
+
+    if (call->asset_path && call_is_angular_http_client(call)) {
+        cbm_gbuf_emit_asset_load(ctx->gbuf, source_node, call);
+        return SKIP_ONE;
     }
 
     /* Service-pattern HTTP/ASYNC client call (`requests.get(url)`): the service
@@ -498,6 +509,10 @@ static int resolve_single_call(cbm_pipeline_ctx_t *ctx, CBMCall *call,
          * Native `fetch()` (#856) belongs here too, not in the substring
          * tables above: it only counts as the global API once resolution has
          * already failed to find a local/imported `fetch` definition. */
+        if (call->asset_path && cbm_service_pattern_is_global_fetch(call->callee_name)) {
+            cbm_gbuf_emit_asset_load(ctx->gbuf, source_node, call);
+            return SKIP_ONE;
+        }
         cbm_svc_kind_t esvc = cbm_service_pattern_match(call->callee_name);
         if (esvc == CBM_SVC_NONE && cbm_service_pattern_is_global_fetch(call->callee_name)) {
             esvc = CBM_SVC_HTTP;

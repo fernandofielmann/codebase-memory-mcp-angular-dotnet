@@ -40,6 +40,11 @@ const char *cbm_route_canon_path(const char *in, char *out, size_t out_sz);
 int64_t cbm_gbuf_find_http_route(const cbm_gbuf_t *gb, const char *url, const char *method);
 int64_t cbm_gbuf_upsert_http_route(cbm_gbuf_t *gb, const char *url, const char *method);
 
+/* Materialize a referenced frontend asset and connect its consumer without
+ * routing it through HTTP_CALLS/cross-service matching. */
+int64_t cbm_gbuf_upsert_asset(cbm_gbuf_t *gb, const char *asset_path);
+void cbm_gbuf_emit_asset_load(cbm_gbuf_t *gb, const cbm_gbuf_node_t *source, const CBMCall *call);
+
 /* True when a graph node is a structural directory container (Folder/Project)
  * rather than a code node. In a directory-based-module language (Java/Go, see
  * cbm_lang_module_is_dir) a file's module QN equals its directory QN, so an

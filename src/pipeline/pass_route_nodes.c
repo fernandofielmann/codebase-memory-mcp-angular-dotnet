@@ -41,6 +41,93 @@ enum {
 
 bool cbm_service_pattern_is_http_route_literal(const char *literal, const char *callee_name);
 
+static const char *asset_extension(const char *path) {
+    const char *slash = strrchr(path, '/');
+    const char *dot = strrchr(path, '.');
+    return dot && (!slash || dot > slash) && dot[SKIP_ONE] ? dot + SKIP_ONE : "";
+}
+
+static bool asset_ext_in(const char *ext, const char *const *extensions) {
+    for (int i = 0; extensions[i]; i++) {
+        if (strcasecmp(ext, extensions[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static const char *asset_type(const char *extension) {
+    static const char *const data[] = {"json", "yaml", "yml", "toml", "csv", "xml", NULL};
+    static const char *const images[] = {"png",  "jpg",  "jpeg", "gif", "svg",
+                                         "webp", "avif", "ico",  NULL};
+    static const char *const styles[] = {"css", "scss", "sass", "less", NULL};
+    static const char *const scripts[] = {"js", "mjs", "cjs", "ts", NULL};
+    static const char *const fonts[] = {"woff", "woff2", "ttf", "otf", "eot", NULL};
+    static const char *const media[] = {"mp3", "wav", "ogg", "mp4", "webm", NULL};
+    static const char *const documents[] = {"html", "htm", "pdf", "txt", "md", NULL};
+    if (asset_ext_in(extension, data)) {
+        return "data";
+    }
+    if (asset_ext_in(extension, images)) {
+        return "image";
+    }
+    if (asset_ext_in(extension, styles)) {
+        return "stylesheet";
+    }
+    if (asset_ext_in(extension, scripts)) {
+        return "script";
+    }
+    if (asset_ext_in(extension, fonts)) {
+        return "font";
+    }
+    if (asset_ext_in(extension, media)) {
+        return "media";
+    }
+    if (asset_ext_in(extension, documents)) {
+        return "document";
+    }
+    return "other";
+}
+
+int64_t cbm_gbuf_upsert_asset(cbm_gbuf_t *gb, const char *asset_path) {
+    if (!gb || !asset_path || asset_path[0] != '/') {
+        return 0;
+    }
+    char asset_qn[CBM_ROUTE_QN_SIZE];
+    int n = snprintf(asset_qn, sizeof(asset_qn), "__asset__%s", asset_path);
+    if (n <= 0 || n >= (int)sizeof(asset_qn)) {
+        return 0;
+    }
+    const char *extension = asset_extension(asset_path);
+    char esc_path[CBM_SZ_1K];
+    cbm_json_escape(esc_path, sizeof(esc_path), asset_path);
+    char properties[CBM_SZ_2K];
+    snprintf(properties, sizeof(properties),
+             "{\"path\":\"%s\",\"extension\":\"%s\",\"asset_type\":\"%s\","
+             "\"source\":\"programmatic\"}",
+             esc_path, extension, asset_type(extension));
+    return cbm_gbuf_upsert_node(gb, "Asset", asset_path, asset_qn, "", 0, 0, properties);
+}
+
+void cbm_gbuf_emit_asset_load(cbm_gbuf_t *gb, const cbm_gbuf_node_t *source, const CBMCall *call) {
+    if (!gb || !source || !call || !call->asset_path) {
+        return;
+    }
+    int64_t asset_id = cbm_gbuf_upsert_asset(gb, call->asset_path);
+    if (asset_id <= 0) {
+        return;
+    }
+    char esc_callee[CBM_SZ_256];
+    char esc_path[CBM_SZ_1K];
+    cbm_json_escape(esc_callee, sizeof(esc_callee), call->callee_name ? call->callee_name : "");
+    cbm_json_escape(esc_path, sizeof(esc_path), call->asset_path);
+    char properties[CBM_SZ_2K];
+    snprintf(properties, sizeof(properties),
+             "{\"callee\":\"%s\",\"asset_path\":\"%s\",\"via\":\"programmatic\",\"line\":%d}",
+             esc_callee, esc_path, call->start_line);
+    cbm_gbuf_insert_edge(gb, source->id, asset_id, "LOADS_ASSET", properties);
+}
+
 /* True for characters that may appear in a ":name" route parameter. */
 static inline bool is_route_ident_char(char c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';

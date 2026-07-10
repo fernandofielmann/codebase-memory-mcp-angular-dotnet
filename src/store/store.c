@@ -2324,19 +2324,19 @@ int cbm_store_node_neighbor_names(cbm_store_t *s, int64_t node_id, int limit, ch
     *out_callees = NULL;
     *callee_count = 0;
 
-    query_neighbor_names(
-        s->db,
-        "SELECT DISTINCT n.name FROM edges e JOIN nodes n ON e.source_id = n.id "
-        "WHERE e.target_id = ?1 AND e.type IN ('CALLS','HTTP_CALLS','ASYNC_CALLS') "
-        "ORDER BY n.name LIMIT ?2",
-        node_id, limit, out_callers, caller_count);
+    query_neighbor_names(s->db,
+                         "SELECT DISTINCT n.name FROM edges e JOIN nodes n ON e.source_id = n.id "
+                         "WHERE e.target_id = ?1 "
+                         "AND e.type IN ('CALLS','HTTP_CALLS','ASYNC_CALLS','LOADS_ASSET') "
+                         "ORDER BY n.name LIMIT ?2",
+                         node_id, limit, out_callers, caller_count);
 
-    query_neighbor_names(
-        s->db,
-        "SELECT DISTINCT n.name FROM edges e JOIN nodes n ON e.target_id = n.id "
-        "WHERE e.source_id = ?1 AND e.type IN ('CALLS','HTTP_CALLS','ASYNC_CALLS') "
-        "ORDER BY n.name LIMIT ?2",
-        node_id, limit, out_callees, callee_count);
+    query_neighbor_names(s->db,
+                         "SELECT DISTINCT n.name FROM edges e JOIN nodes n ON e.target_id = n.id "
+                         "WHERE e.source_id = ?1 "
+                         "AND e.type IN ('CALLS','HTTP_CALLS','ASYNC_CALLS','LOADS_ASSET') "
+                         "ORDER BY n.name LIMIT ?2",
+                         node_id, limit, out_callees, callee_count);
 
     return 0;
 }

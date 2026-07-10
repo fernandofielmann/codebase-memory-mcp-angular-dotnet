@@ -63,6 +63,19 @@ static int has_call_route_from(CBMFileResult *r, const char *caller, const char 
     return 0;
 }
 
+static int has_call_asset_from(CBMFileResult *r, const char *caller, const char *callee,
+                               const char *asset_path) {
+    for (int i = 0; i < r->calls.count; i++) {
+        const CBMCall *call = &r->calls.items[i];
+        if (call->enclosing_func_qn && strstr(call->enclosing_func_qn, caller) &&
+            call->callee_name && strstr(call->callee_name, callee) && call->asset_path &&
+            strcmp(call->asset_path, asset_path) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* Check if any import with the given module path exists. */
 static int __attribute__((unused)) has_import(CBMFileResult *r, const char *path_substr) {
     for (int i = 0; i < r->imports.count; i++) {
@@ -201,6 +214,7 @@ TEST(extract_angular_httpclient_routes) {
     ASSERT(has_call_route(r, "HttpClient.get", "/api/v1/features"));
     ASSERT_FALSE(has_call_route(r, "HttpClient.get", "/api/v1/local-only"));
     ASSERT_FALSE(has_call_route(r, "HttpClient.get", "/assets/i18n/{}.json"));
+    ASSERT(has_call_asset_from(r, "AssetLoader.load", "HttpClient.get", "/assets/i18n/{}.json"));
     cbm_free_result(r);
     PASS();
 }
@@ -233,6 +247,13 @@ TEST(extract_angular_http_wrapper_routes) {
                 "    const apiURL = `/api/v1/ambiguous/${id}`;\n"
                 "    return this.ambiguous(apiURL, payload);\n"
                 "  }\n"
+                "  getAsset(assetURL: string) {\n"
+                "    return this.http.get(assetURL);\n"
+                "  }\n"
+                "  loadTranslation(lang: string) {\n"
+                "    const assetURL = `../assets/i18n/${lang}.json?cache=1`;\n"
+                "    return this.getAsset(assetURL);\n"
+                "  }\n"
                 "}\n",
                 CBM_LANG_TYPESCRIPT, "t", "api.service.ts");
     ASSERT_NOT_NULL(r);
@@ -242,6 +263,8 @@ TEST(extract_angular_http_wrapper_routes) {
         has_call_route_from(r, "ApiService.saveMutable", "HttpClient.post", "/api/v1/mutable/{}"));
     ASSERT_FALSE(has_call_route_from(r, "ApiService.saveAmbiguous", "HttpClient.post",
                                      "/api/v1/ambiguous/{}"));
+    ASSERT(has_call_asset_from(r, "ApiService.loadTranslation", "HttpClient.get",
+                               "/assets/i18n/{}.json"));
     cbm_free_result(r);
     PASS();
 }

@@ -2046,7 +2046,7 @@ static char *handle_search_graph(cbm_mcp_server_t *srv, const char *args) {
             yyjson_mut_obj_add_str(
                 doc, root, "hint",
                 "No nodes with this label. Available labels: Function, Method, Class, "
-                "Interface, Route, Variable, Module, Package, File, Folder.");
+                "Interface, Route, Asset, Variable, Module, Package, File, Folder.");
         }
     }
 
