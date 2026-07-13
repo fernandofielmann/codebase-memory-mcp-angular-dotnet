@@ -398,6 +398,12 @@ TEST(mcp_get_architecture_aspects_schema_enum_pr560) {
     ASSERT_NOT_NULL(input_schema);
     yyjson_val *properties = yyjson_obj_get(input_schema, "properties");
     ASSERT_NOT_NULL(properties);
+    yyjson_val *limit = yyjson_obj_get(properties, "limit");
+    ASSERT_NOT_NULL(limit);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(limit, "type")), "integer");
+    ASSERT_EQ(yyjson_get_int(yyjson_obj_get(limit, "minimum")), 1);
+    ASSERT_EQ(yyjson_get_int(yyjson_obj_get(limit, "maximum")), 1000);
+    ASSERT_EQ(yyjson_get_int(yyjson_obj_get(limit, "default")), 100);
     yyjson_val *aspects = yyjson_obj_get(properties, "aspects");
     ASSERT_NOT_NULL(aspects);
     ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(aspects, "type")), "array");
@@ -1286,6 +1292,96 @@ TEST(tool_get_architecture_emits_populated_sections) {
     ASSERT_NOT_NULL(strstr(inner, "\"entry_points\""));
     ASSERT_NOT_NULL(strstr(inner, "main"));
 
+    free(inner);
+    free(resp);
+    cbm_mcp_server_free(srv);
+    PASS();
+}
+
+TEST(tool_get_architecture_reports_limits_and_multiple_handlers) {
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    cbm_store_t *st = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(st);
+    cbm_mcp_server_set_project(srv, "arch-window");
+    ASSERT_EQ(cbm_store_upsert_project(st, "arch-window", "/tmp/arch-window"), CBM_STORE_OK);
+
+    int64_t route_a_id = 0;
+    const char *paths[] = {"/c", "/b", "/a"};
+    for (int i = 0; i < 3; i++) {
+        char qn[64];
+        char props[128];
+        snprintf(qn, sizeof(qn), "arch-window.route.%s", paths[i] + 1);
+        snprintf(props, sizeof(props), "{\"method\":\"GET\",\"path\":\"%s\"}", paths[i]);
+        cbm_node_t route = {.project = "arch-window",
+                            .label = "Route",
+                            .name = paths[i],
+                            .qualified_name = qn,
+                            .file_path = "src/routes.c",
+                            .properties_json = props};
+        int64_t route_id = cbm_store_upsert_node(st, &route);
+        ASSERT_GT(route_id, 0);
+        if (strcmp(paths[i], "/a") == 0) {
+            route_a_id = route_id;
+        }
+    }
+
+    cbm_node_t handler_z = {.project = "arch-window",
+                            .label = "Method",
+                            .name = "HandleZ",
+                            .qualified_name = "arch-window.handlers.HandleZ",
+                            .file_path = "src/handlers.c"};
+    cbm_node_t handler_a = {.project = "arch-window",
+                            .label = "Method",
+                            .name = "HandleA",
+                            .qualified_name = "arch-window.handlers.HandleA",
+                            .file_path = "src/handlers.c"};
+    int64_t handler_z_id = cbm_store_upsert_node(st, &handler_z);
+    int64_t handler_a_id = cbm_store_upsert_node(st, &handler_a);
+    ASSERT_GT(handler_z_id, 0);
+    ASSERT_GT(handler_a_id, 0);
+    cbm_edge_t handles_z = {.project = "arch-window",
+                            .source_id = handler_z_id,
+                            .target_id = route_a_id,
+                            .type = "HANDLES"};
+    cbm_edge_t handles_a = {.project = "arch-window",
+                            .source_id = handler_a_id,
+                            .target_id = route_a_id,
+                            .type = "HANDLES"};
+    ASSERT_GT(cbm_store_insert_edge(st, &handles_z), 0);
+    ASSERT_GT(cbm_store_insert_edge(st, &handles_a), 0);
+
+    char *resp = cbm_mcp_server_handle(
+        srv, "{\"jsonrpc\":\"2.0\",\"id\":915,\"method\":\"tools/call\","
+             "\"params\":{\"name\":\"get_architecture\","
+             "\"arguments\":{\"project\":\"arch-window\",\"aspects\":[\"routes\"],"
+             "\"limit\":2}}}");
+    ASSERT_NOT_NULL(resp);
+    char *inner = extract_text_content(resp);
+    ASSERT_NOT_NULL(inner);
+    yyjson_doc *doc = yyjson_read(inner, strlen(inner), 0);
+    ASSERT_NOT_NULL(doc);
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    yyjson_val *routes = yyjson_obj_get(root, "routes");
+    ASSERT_NOT_NULL(routes);
+    ASSERT_EQ(yyjson_arr_size(routes), 2);
+    yyjson_val *first = yyjson_arr_get_first(routes);
+    ASSERT_NOT_NULL(first);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(first, "path")), "/a");
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(first, "handler")), "arch-window.handlers.HandleA");
+    yyjson_val *handlers = yyjson_obj_get(first, "handlers");
+    ASSERT_NOT_NULL(handlers);
+    ASSERT_EQ(yyjson_arr_size(handlers), 2);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_arr_get(handlers, 0)), "arch-window.handlers.HandleA");
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_arr_get(handlers, 1)), "arch-window.handlers.HandleZ");
+
+    yyjson_val *meta = yyjson_obj_get(root, "routes_meta");
+    ASSERT_NOT_NULL(meta);
+    ASSERT_EQ(yyjson_get_int(yyjson_obj_get(meta, "total")), 3);
+    ASSERT_EQ(yyjson_get_int(yyjson_obj_get(meta, "shown")), 2);
+    ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(meta, "truncated")));
+
+    yyjson_doc_free(doc);
     free(inner);
     free(resp);
     cbm_mcp_server_free(srv);
@@ -5283,6 +5379,7 @@ SUITE(mcp) {
     RUN_TEST(tool_delete_project_not_found);
     RUN_TEST(tool_get_architecture_empty);
     RUN_TEST(tool_get_architecture_emits_populated_sections);
+    RUN_TEST(tool_get_architecture_reports_limits_and_multiple_handlers);
     RUN_TEST(tool_get_architecture_overview_compact_subset_pr560);
     RUN_TEST(tool_get_architecture_rejects_unknown_aspect_pr560);
     RUN_TEST(tool_get_architecture_accepts_project_name_alias_issue640);

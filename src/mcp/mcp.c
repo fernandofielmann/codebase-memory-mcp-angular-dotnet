@@ -463,7 +463,8 @@ static const tool_def_t TOOLS[] = {
      "graph, surfacing the de-facto modules (each with a label, member count, cohesion score, "
      "representative top_nodes, and the packages/edge_types that bind it) — use these to grasp "
      "the real architectural seams, which often cut across the folder layout. Optional path scopes "
-     "analysis to nodes under that directory prefix (file_path).",
+     "analysis to nodes under that directory prefix (file_path). Entry points and routes are "
+     "deterministically ordered; their metadata reports total, shown, and truncated.",
      /* The aspects enum mirrors VALID_ASPECTS (see aspect_is_valid) — update both together. */
      "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"},\"path\":{\"type\":"
      "\"string\",\"description\":\"Optional directory prefix to scope architecture (e.g. "
@@ -472,7 +473,10 @@ static const tool_def_t TOOLS[] = {
      "\"overview\",\"structure\",\"dependencies\",\"routes\",\"languages\",\"packages\","
      "\"entry_points\",\"hotspots\",\"boundaries\",\"layers\",\"file_tree\",\"clusters\"]},"
      "\"description\":\"Aspects to include. 'all' = everything; 'overview' = compact summary "
-     "(all except file_tree); omit = all.\"}},\"required\":[\"project\"]}"},
+     "(all except file_tree); omit = all.\"},"
+     "\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":1000,\"default\":100,"
+     "\"description\":\"Maximum entry points and routes returned per section. Metadata reports "
+     "the full total and whether either section was truncated.\"}},\"required\":[\"project\"]}"},
 
     {"search_code", "Search code",
      "Graph-augmented code search. Finds text patterns via grep, then enriches results with "
@@ -2490,6 +2494,12 @@ static void append_cross_repo_summary(yyjson_mut_doc *doc, yyjson_mut_val *root,
 static char *handle_get_architecture(cbm_mcp_server_t *srv, const char *args) {
     char *project = get_project_arg(args);
     char *scope_path = cbm_mcp_get_string_arg(args, "path");
+    int result_limit = cbm_mcp_get_int_arg(args, "limit", CBM_ARCH_DEFAULT_LIMIT);
+    if (result_limit <= 0) {
+        result_limit = CBM_ARCH_DEFAULT_LIMIT;
+    } else if (result_limit > CBM_ARCH_MAX_LIMIT) {
+        result_limit = CBM_ARCH_MAX_LIMIT;
+    }
     cbm_store_t *store = resolve_store(srv, project);
     REQUIRE_STORE(store, project);
 
@@ -2568,9 +2578,9 @@ static char *handle_get_architecture(cbm_mcp_server_t *srv, const char *args) {
     cbm_store_get_schema_counts_scoped(store, project, scope_path, &schema);
 
     cbm_architecture_info_t arch = {0};
-    cbm_store_get_architecture(store, project, scope_path,
-                               aspects_strs_count > 0 ? aspects_strs : NULL, aspects_strs_count,
-                               &arch);
+    cbm_store_get_architecture_limited(store, project, scope_path,
+                                       aspects_strs_count > 0 ? aspects_strs : NULL,
+                                       aspects_strs_count, result_limit, &arch);
 
     int node_count = cbm_store_count_nodes_scoped(store, project, scope_path);
     int edge_count = cbm_store_count_edges_scoped(store, project, scope_path);
@@ -2658,7 +2668,7 @@ static char *handle_get_architecture(cbm_mcp_server_t *srv, const char *args) {
     }
 
     /* Entry points */
-    if (arch.entry_point_count > 0) {
+    if (aspect_wanted(aspects_doc, aspects_arr, "entry_points")) {
         yyjson_mut_val *eps = yyjson_mut_arr(doc);
         for (int i = 0; i < arch.entry_point_count; i++) {
             yyjson_mut_val *item = yyjson_mut_obj(doc);
@@ -2672,10 +2682,16 @@ static char *handle_get_architecture(cbm_mcp_server_t *srv, const char *args) {
             yyjson_mut_arr_add_val(eps, item);
         }
         yyjson_mut_obj_add_val(doc, root, "entry_points", eps);
+        yyjson_mut_val *meta = yyjson_mut_obj(doc);
+        yyjson_mut_obj_add_int(doc, meta, "total", arch.entry_point_total);
+        yyjson_mut_obj_add_int(doc, meta, "shown", arch.entry_point_count);
+        yyjson_mut_obj_add_bool(doc, meta, "truncated",
+                                arch.entry_point_total > arch.entry_point_count);
+        yyjson_mut_obj_add_val(doc, root, "entry_points_meta", meta);
     }
 
     /* HTTP routes */
-    if (arch.route_count > 0) {
+    if (aspect_wanted(aspects_doc, aspects_arr, "routes")) {
         yyjson_mut_val *routes = yyjson_mut_arr(doc);
         for (int i = 0; i < arch.route_count; i++) {
             yyjson_mut_val *item = yyjson_mut_obj(doc);
@@ -2685,9 +2701,20 @@ static char *handle_get_architecture(cbm_mcp_server_t *srv, const char *args) {
                                    arch.routes[i].path ? arch.routes[i].path : "");
             yyjson_mut_obj_add_str(doc, item, "handler",
                                    arch.routes[i].handler ? arch.routes[i].handler : "");
+            yyjson_mut_val *handlers = yyjson_mut_arr(doc);
+            for (int j = 0; j < arch.routes[i].handler_count; j++) {
+                yyjson_mut_arr_add_str(
+                    doc, handlers, arch.routes[i].handlers[j] ? arch.routes[i].handlers[j] : "");
+            }
+            yyjson_mut_obj_add_val(doc, item, "handlers", handlers);
             yyjson_mut_arr_add_val(routes, item);
         }
         yyjson_mut_obj_add_val(doc, root, "routes", routes);
+        yyjson_mut_val *meta = yyjson_mut_obj(doc);
+        yyjson_mut_obj_add_int(doc, meta, "total", arch.route_total);
+        yyjson_mut_obj_add_int(doc, meta, "shown", arch.route_count);
+        yyjson_mut_obj_add_bool(doc, meta, "truncated", arch.route_total > arch.route_count);
+        yyjson_mut_obj_add_val(doc, root, "routes_meta", meta);
     }
 
     /* Hotspots */

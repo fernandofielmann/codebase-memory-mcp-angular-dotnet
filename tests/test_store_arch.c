@@ -275,7 +275,8 @@ TEST(arch_path_scoping) {
     ASSERT_TRUE(whole_pkg_nodes > scoped_pkg_nodes);
     ASSERT_EQ(scoped_pkg_nodes, 1);
 
-    ASSERT_TRUE(cbm_store_count_nodes(s, "pscope") > cbm_store_count_nodes_scoped(s, "pscope", "apps/foo"));
+    ASSERT_TRUE(cbm_store_count_nodes(s, "pscope") >
+                cbm_store_count_nodes_scoped(s, "pscope", "apps/foo"));
 
     cbm_architecture_info_t scoped_slash;
     memset(&scoped_slash, 0, sizeof(scoped_slash));
@@ -350,6 +351,131 @@ TEST(arch_routes) {
     ASSERT_STR_EQ(info.routes[0].handler, "HandleRequest");
 
     cbm_store_architecture_free(&info);
+    cbm_store_close(s);
+    PASS();
+}
+
+TEST(arch_routes_complete_ordered_limited_and_edge_handlers) {
+    cbm_store_t *s = cbm_store_open_memory();
+    ASSERT_NOT_NULL(s);
+    ASSERT_EQ(cbm_store_upsert_project(s, "route-window", "/tmp/route-window"), CBM_STORE_OK);
+
+    int64_t route_ids[25] = {0};
+    for (int i = 24; i >= 0; i--) {
+        char path[64];
+        char qn[96];
+        char props[192];
+        snprintf(path, sizeof(path), "/api/route-%02d", i);
+        snprintf(qn, sizeof(qn), "route-window.routes.%02d", i);
+        if (i == 2) {
+            snprintf(props, sizeof(props), "{\"method\":\"GET\",\"path\":\"%s\"}", path);
+        } else {
+            snprintf(props, sizeof(props),
+                     "{\"method\":\"GET\",\"path\":\"%s\",\"handler\":\"legacy.%02d\"}", path, i);
+        }
+        cbm_node_t route = {.project = "route-window",
+                            .label = "Route",
+                            .name = path,
+                            .qualified_name = qn,
+                            .file_path = "src/routes.c",
+                            .properties_json = props};
+        route_ids[i] = cbm_store_upsert_node(s, &route);
+        ASSERT_GT(route_ids[i], 0);
+    }
+
+    cbm_node_t handler_z = {.project = "route-window",
+                            .label = "Method",
+                            .name = "HandleZ",
+                            .qualified_name = "route-window.handlers.HandleZ",
+                            .file_path = "src/handlers.c"};
+    cbm_node_t handler_a = {.project = "route-window",
+                            .label = "Method",
+                            .name = "HandleA",
+                            .qualified_name = "route-window.handlers.HandleA",
+                            .file_path = "src/handlers.c"};
+    int64_t handler_z_id = cbm_store_upsert_node(s, &handler_z);
+    int64_t handler_a_id = cbm_store_upsert_node(s, &handler_a);
+    ASSERT_GT(handler_z_id, 0);
+    ASSERT_GT(handler_a_id, 0);
+    cbm_edge_t handles_z = {.project = "route-window",
+                            .source_id = handler_z_id,
+                            .target_id = route_ids[0],
+                            .type = "HANDLES"};
+    cbm_edge_t handles_a = {.project = "route-window",
+                            .source_id = handler_a_id,
+                            .target_id = route_ids[0],
+                            .type = "HANDLES"};
+    ASSERT_GT(cbm_store_insert_edge(s, &handles_z), 0);
+    ASSERT_GT(cbm_store_insert_edge(s, &handles_a), 0);
+
+    const char *aspects[] = {"routes"};
+    cbm_architecture_info_t complete;
+    ASSERT_EQ(cbm_store_get_architecture(s, "route-window", NULL, aspects, 1, &complete),
+              CBM_STORE_OK);
+    ASSERT_EQ(complete.route_total, 25);
+    ASSERT_EQ(complete.route_count, 25);
+    ASSERT_STR_EQ(complete.routes[0].path, "/api/route-00");
+    ASSERT_STR_EQ(complete.routes[24].path, "/api/route-24");
+    ASSERT_EQ(complete.routes[0].handler_count, 2);
+    ASSERT_STR_EQ(complete.routes[0].handler, "route-window.handlers.HandleA");
+    ASSERT_STR_EQ(complete.routes[0].handlers[0], "route-window.handlers.HandleA");
+    ASSERT_STR_EQ(complete.routes[0].handlers[1], "route-window.handlers.HandleZ");
+    ASSERT_EQ(complete.routes[1].handler_count, 1);
+    ASSERT_STR_EQ(complete.routes[1].handler, "legacy.01");
+    ASSERT_STR_EQ(complete.routes[1].handlers[0], "legacy.01");
+    ASSERT_EQ(complete.routes[2].handler_count, 0);
+    ASSERT_STR_EQ(complete.routes[2].handler, "");
+    cbm_store_architecture_free(&complete);
+
+    cbm_architecture_info_t limited;
+    ASSERT_EQ(cbm_store_get_architecture_limited(s, "route-window", NULL, aspects, 1, 5, &limited),
+              CBM_STORE_OK);
+    ASSERT_EQ(limited.route_total, 25);
+    ASSERT_EQ(limited.route_count, 5);
+    ASSERT_STR_EQ(limited.routes[0].path, "/api/route-00");
+    ASSERT_STR_EQ(limited.routes[4].path, "/api/route-04");
+    cbm_store_architecture_free(&limited);
+    cbm_store_close(s);
+    PASS();
+}
+
+TEST(arch_entry_points_complete_ordered_and_limited) {
+    cbm_store_t *s = cbm_store_open_memory();
+    ASSERT_NOT_NULL(s);
+    ASSERT_EQ(cbm_store_upsert_project(s, "entry-window", "/tmp/entry-window"), CBM_STORE_OK);
+    for (int i = 24; i >= 0; i--) {
+        char name[64];
+        char qn[96];
+        char file[96];
+        snprintf(name, sizeof(name), "Entry%02d", i);
+        snprintf(qn, sizeof(qn), "entry-window.app.Entry%02d", i);
+        snprintf(file, sizeof(file), "src/entry-%02d.c", i);
+        cbm_node_t entry = {.project = "entry-window",
+                            .label = "Function",
+                            .name = name,
+                            .qualified_name = qn,
+                            .file_path = file,
+                            .properties_json = "{\"is_entry_point\":true}"};
+        ASSERT_GT(cbm_store_upsert_node(s, &entry), 0);
+    }
+
+    const char *aspects[] = {"entry_points"};
+    cbm_architecture_info_t complete;
+    ASSERT_EQ(cbm_store_get_architecture(s, "entry-window", NULL, aspects, 1, &complete),
+              CBM_STORE_OK);
+    ASSERT_EQ(complete.entry_point_total, 25);
+    ASSERT_EQ(complete.entry_point_count, 25);
+    ASSERT_STR_EQ(complete.entry_points[0].name, "Entry00");
+    ASSERT_STR_EQ(complete.entry_points[24].name, "Entry24");
+    cbm_store_architecture_free(&complete);
+
+    cbm_architecture_info_t limited;
+    ASSERT_EQ(cbm_store_get_architecture_limited(s, "entry-window", NULL, aspects, 1, 5, &limited),
+              CBM_STORE_OK);
+    ASSERT_EQ(limited.entry_point_total, 25);
+    ASSERT_EQ(limited.entry_point_count, 5);
+    ASSERT_STR_EQ(limited.entry_points[4].name, "Entry04");
+    cbm_store_architecture_free(&limited);
     cbm_store_close(s);
     PASS();
 }
@@ -1371,6 +1497,8 @@ SUITE(store_arch) {
     RUN_TEST(arch_empty_project);
     RUN_TEST(arch_languages);
     RUN_TEST(arch_routes);
+    RUN_TEST(arch_routes_complete_ordered_limited_and_edge_handlers);
+    RUN_TEST(arch_entry_points_complete_ordered_and_limited);
     RUN_TEST(arch_hotspots);
     RUN_TEST(arch_boundaries);
     RUN_TEST(arch_boundaries_no_quadratic_scan);

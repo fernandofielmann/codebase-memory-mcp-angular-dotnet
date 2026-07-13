@@ -520,6 +520,8 @@ typedef struct {
     const char *method;
     const char *path;
     const char *handler;
+    const char **handlers;
+    int handler_count;
 } cbm_route_info_t;
 
 typedef struct {
@@ -582,7 +584,9 @@ typedef struct {
     int language_count;
     int package_count;
     int entry_point_count;
+    int entry_point_total;
     int route_count;
+    int route_total;
     int hotspot_count;
     int boundary_count;
     int service_count;
@@ -591,9 +595,15 @@ typedef struct {
     int file_tree_count;
 } cbm_architecture_info_t;
 
+#define CBM_ARCH_DEFAULT_LIMIT 100
+#define CBM_ARCH_MAX_LIMIT 1000
+
 int cbm_store_get_architecture(cbm_store_t *s, const char *project, const char *path,
                                const char **aspects, int aspect_count,
                                cbm_architecture_info_t *out);
+int cbm_store_get_architecture_limited(cbm_store_t *s, const char *project, const char *path,
+                                       const char **aspects, int aspect_count, int result_limit,
+                                       cbm_architecture_info_t *out);
 void cbm_store_architecture_free(cbm_architecture_info_t *out);
 
 /* ── ADR (Architecture Decision Record) ────────────────────────── */
