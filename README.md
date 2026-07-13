@@ -158,6 +158,8 @@ Removes all agent configs, skills, hooks, and instructions. Does not remove the 
 - **Angular metadata**: Preserves literal `Component`, `Directive`, `Pipe`, `Injectable`, and
   `NgModule` roles on existing class nodes, including selectors, standalone status, external
   templates/styles, and resolvable standalone imports
+- **Frontend asset dependencies**: Programmatic Angular `HttpClient` and native `fetch` loads
+  create `Asset` nodes and `LOADS_ASSET` edges without polluting backend routes
 - **Dead code detection**: Finds functions with zero callers, excluding entry points
 - **Cypher-like queries**: `MATCH (f:Function)-[:CALLS]->(g) WHERE f.name = 'main' RETURN g.name`
 
@@ -169,6 +171,11 @@ Removes all agent configs, skills, hooks, and instructions. Does not remove the 
 
 ### Cross-service linking
 - **HTTP** route ↔ call-site matching with confidence scoring
+- **Angular ↔ ASP.NET Core**: Composes controller and action attributes (including
+  `[controller]`, `[action]`, and API-version tokens), recognizes constructor-injected and
+  `inject(HttpClient)` calls, and propagates conservative single-layer wrapper URLs to their
+  public callers. ASP.NET matching is parameter-template aware and case-insensitive while
+  other frameworks remain case-sensitive.
 - **gRPC, GraphQL, tRPC** service detection with protobuf Route extraction
 - **Channel detection** (`EMITS` / `LISTENS_ON`) for Socket.IO, EventEmitter, and generic pub-sub patterns across 8 languages with constant resolution
 
@@ -180,6 +187,7 @@ Removes all agent configs, skills, hooks, and instructions. Does not remove the 
 ### Edge types (selected)
 - `CALLS`, `IMPORTS`, `DEFINES`, `IMPLEMENTS`, `INHERITS`
 - `HTTP_CALLS`, `ASYNC_CALLS` (cross-service)
+- `LOADS_ASSET` (programmatic frontend dependencies)
 - `EMITS`, `LISTENS_ON` (channels)
 - `DATA_FLOWS` with arg-to-param mapping + field access chains
 - `SIMILAR_TO` (MinHash + LSH near-clone detection, Jaccard scored)
@@ -446,15 +454,20 @@ codebase-memory-mcp cli --raw search_graph '{"project": "my-project", "label": "
 
 ### Node Labels
 
-`Project`, `Package`, `Folder`, `File`, `Module`, `Class`, `Function`, `Method`, `Interface`, `Enum`, `Type`, `Route`, `Resource`
+`Project`, `Package`, `Folder`, `File`, `Module`, `Class`, `Function`, `Method`, `Interface`, `Enum`, `Type`, `Route`, `Asset`, `Resource`
 
 Angular declarations remain `Class` nodes. Their queryable properties include `angular_kind`,
 `selector`, `standalone`, `templateUrl`, `styleUrls`, and `angular_imports`; resolved standalone
 dependencies use `IMPORTS` edges with `via: "angular_metadata"`.
 
+Programmatic frontend asset loads are distinct from HTTP routes. Their `Asset` nodes expose
+`path`, `extension`, `asset_type`, and `source: "programmatic"`. Asset paths normalize template
+parameters and remove query strings and fragments; these loads do not create `Route` nodes or
+`HTTP_CALLS` edges.
+
 ### Edge Types
 
-`CONTAINS_PACKAGE`, `CONTAINS_FOLDER`, `CONTAINS_FILE`, `DEFINES`, `DEFINES_METHOD`, `IMPORTS`, `CALLS`, `HTTP_CALLS`, `ASYNC_CALLS`, `IMPLEMENTS`, `HANDLES`, `USAGE`, `CONFIGURES`, `WRITES`, `MEMBER_OF`, `TESTS`, `USES_TYPE`, `FILE_CHANGES_WITH`
+`CONTAINS_PACKAGE`, `CONTAINS_FOLDER`, `CONTAINS_FILE`, `DEFINES`, `DEFINES_METHOD`, `IMPORTS`, `CALLS`, `HTTP_CALLS`, `ASYNC_CALLS`, `LOADS_ASSET`, `IMPLEMENTS`, `HANDLES`, `USAGE`, `CONFIGURES`, `WRITES`, `MEMBER_OF`, `TESTS`, `USES_TYPE`, `FILE_CHANGES_WITH`
 
 ### Qualified Names
 
@@ -475,6 +488,10 @@ Anything outside this subset (write/`MERGE`/`CALL` clauses, unsupported function
 ## Ignoring Files
 
 Layered: hardcoded patterns (`.git`, `node_modules`, etc.) → `.gitignore` hierarchy → `.cbmignore` (project-specific, gitignore syntax). Symlinks are always skipped.
+
+Generated `.min.js` and `.min.css` bundles are excluded in full, moderate, and fast modes. They
+are reported by `index_repository` and `index_status` under the by-design `not_indexed` section
+with reason `ignored-suffix`.
 
 See [docs/cbmignore.md](docs/cbmignore.md) for the full `.cbmignore` how-to: syntax, precedence across the ignore layers, and negation semantics.
 
