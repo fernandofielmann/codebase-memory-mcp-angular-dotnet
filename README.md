@@ -150,7 +150,7 @@ Removes all agent configs, skills, hooks, and instructions. Does not remove the 
 ## Features
 
 ### Graph & analysis
-- **Architecture overview**: `get_architecture` returns languages, packages, entry points, routes, hotspots, boundaries, layers, and clusters in a single call
+- **Architecture overview**: `get_architecture` returns languages, packages, entry points, routes, hotspots, boundaries, layers, and clusters in a single call. Entry points and routes are deterministically ordered, expose all `HANDLES` targets, and include `total`/`shown`/`truncated` metadata; use `limit` (default 100, maximum 1000) to size each section.
 - **Architecture Decision Records**: `manage_adr` persists architectural decisions across sessions
 - **Louvain community detection**: Discovers functional modules by clustering call edges
 - **Git diff impact mapping**: `detect_changes` maps uncommitted changes to affected symbols with risk classification
@@ -437,7 +437,7 @@ codebase-memory-mcp cli --raw search_graph '{"project": "my-project", "label": "
 | `query_graph` | Execute Cypher-like graph queries (read-only). |
 | `get_graph_schema` | Node/edge counts, relationship patterns, property definitions per label. Run this first. |
 | `get_code_snippet` | Read source code for a function by qualified name. |
-| `get_architecture` | Codebase overview: languages, packages, routes, hotspots, clusters, ADR. |
+| `get_architecture` | Codebase overview: languages, packages, routes, hotspots, clusters, ADR. Accepts `limit` for entry points/routes and reports explicit truncation metadata. |
 | `search_code` | Grep-like text search within indexed project files. |
 | `manage_adr` | CRUD for Architecture Decision Records. |
 | `ingest_traces` | Ingest runtime traces to validate HTTP_CALLS edges. |

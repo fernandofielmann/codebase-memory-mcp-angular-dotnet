@@ -4000,7 +4000,14 @@ static int arch_languages(cbm_store_t *s, const char *project, const char *path,
     return CBM_STORE_OK;
 }
 
-static int arch_entry_points(cbm_store_t *s, const char *project, const char *path,
+static int arch_result_limit(int requested) {
+    if (requested <= 0) {
+        return CBM_ARCH_DEFAULT_LIMIT;
+    }
+    return requested > CBM_ARCH_MAX_LIMIT ? CBM_ARCH_MAX_LIMIT : requested;
+}
+
+static int arch_entry_points(cbm_store_t *s, const char *project, const char *path, int limit,
                              cbm_architecture_info_t *out) {
     char norm[CBM_SZ_512];
     char like[CBM_SZ_512];
@@ -4012,9 +4019,12 @@ static int arch_entry_points(cbm_store_t *s, const char *project, const char *pa
                        "json_extract(properties, '$.is_test') != 1) "
                        "AND file_path NOT LIKE '%test%'";
     if (scoped) {
-        snprintf(sqlbuf, sizeof(sqlbuf), "%s%s LIMIT 20", base, arch_path_scope_sql());
+        snprintf(sqlbuf, sizeof(sqlbuf),
+                 "%s%s ORDER BY COALESCE(file_path, ''), COALESCE(qualified_name, ''), id", base,
+                 arch_path_scope_sql());
     } else {
-        snprintf(sqlbuf, sizeof(sqlbuf), "%s LIMIT 20", base);
+        snprintf(sqlbuf, sizeof(sqlbuf),
+                 "%s ORDER BY COALESCE(file_path, ''), COALESCE(qualified_name, ''), id", base);
     }
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(s->db, sqlbuf, CBM_NOT_FOUND, &stmt, NULL) != SQLITE_OK) {
@@ -4028,8 +4038,13 @@ static int arch_entry_points(cbm_store_t *s, const char *project, const char *pa
 
     int cap = ST_INIT_CAP_8;
     int n = 0;
+    int total = 0;
     cbm_entry_point_t *arr = calloc(cap, sizeof(cbm_entry_point_t));
     while (sqlite3_step(stmt) == SQLITE_ROW) {
+        total++;
+        if (n >= limit) {
+            continue;
+        }
         if (n >= cap) {
             cap *= ST_GROWTH;
             arr = safe_realloc(arr, cap * sizeof(cbm_entry_point_t));
@@ -4042,6 +4057,7 @@ static int arch_entry_points(cbm_store_t *s, const char *project, const char *pa
     sqlite3_finalize(stmt);
     out->entry_points = arr;
     out->entry_point_count = n;
+    out->entry_point_total = total;
     return CBM_STORE_OK;
 }
 
@@ -4069,20 +4085,64 @@ static char *extract_json_string_prop(const char *json, const char *key, int key
     return heap_strdup(vbuf);
 }
 
-static int arch_routes(cbm_store_t *s, const char *project, const char *path,
+static void arch_route_add_handler(cbm_route_info_t *route, int *capacity, const char *handler) {
+    if (!handler || !handler[0]) {
+        return;
+    }
+    for (int i = 0; i < route->handler_count; i++) {
+        if (strcmp(route->handlers[i], handler) == 0) {
+            return;
+        }
+    }
+    if (route->handler_count >= *capacity) {
+        *capacity = *capacity == 0 ? ST_INIT_CAP_8 : *capacity * ST_GROWTH;
+        route->handlers =
+            safe_realloc((void *)route->handlers, (size_t)*capacity * sizeof(const char *));
+    }
+    route->handlers[route->handler_count++] = heap_strdup(handler);
+}
+
+static void arch_route_finish_handlers(cbm_route_info_t *route, int *capacity) {
+    if (route->handler_count > 0) {
+        safe_str_free(&route->handler);
+        route->handler = heap_strdup(route->handlers[0]);
+        return;
+    }
+    if (route->handler && route->handler[0]) {
+        arch_route_add_handler(route, capacity, route->handler);
+    }
+}
+
+static int arch_routes(cbm_store_t *s, const char *project, const char *path, int limit,
                        cbm_architecture_info_t *out) {
     char norm[CBM_SZ_512];
     char like[CBM_SZ_512];
     bool scoped = arch_path_prepare(path, norm, sizeof(norm), like, sizeof(like));
     char sqlbuf[ST_SQL_BUF];
-    const char *base = "SELECT name, properties, COALESCE(file_path, '') FROM nodes "
-                       "WHERE project=?1 AND label='Route' "
-                       "AND (json_extract(properties, '$.is_test') IS NULL OR "
-                       "json_extract(properties, '$.is_test') != 1)";
+    const char *base = "SELECT r.id, r.name, r.properties, COALESCE(r.file_path, ''), "
+                       "COALESCE(NULLIF(h.qualified_name, ''), h.name, '') "
+                       "FROM nodes r "
+                       "LEFT JOIN edges e ON e.project=r.project AND e.target_id=r.id "
+                       "AND e.type='HANDLES' "
+                       "LEFT JOIN nodes h ON h.project=r.project AND h.id=e.source_id "
+                       "WHERE r.project=?1 AND r.label='Route' "
+                       "AND (json_extract(r.properties, '$.is_test') IS NULL OR "
+                       "json_extract(r.properties, '$.is_test') != 1)";
     if (scoped) {
-        snprintf(sqlbuf, sizeof(sqlbuf), "%s%s LIMIT 20", base, arch_path_scope_sql());
+        snprintf(sqlbuf, sizeof(sqlbuf),
+                 "%s AND (r.file_path = ?2 OR r.file_path LIKE ?3) "
+                 "ORDER BY COALESCE(json_extract(r.properties, '$.path'), r.name, ''), "
+                 "COALESCE(json_extract(r.properties, '$.method'), ''), "
+                 "COALESCE(r.qualified_name, ''), r.id, "
+                 "COALESCE(NULLIF(h.qualified_name, ''), h.name, ''), h.id",
+                 base);
     } else {
-        snprintf(sqlbuf, sizeof(sqlbuf), "%s LIMIT 20", base);
+        snprintf(sqlbuf, sizeof(sqlbuf),
+                 "%s ORDER BY COALESCE(json_extract(r.properties, '$.path'), r.name, ''), "
+                 "COALESCE(json_extract(r.properties, '$.method'), ''), "
+                 "COALESCE(r.qualified_name, ''), r.id, "
+                 "COALESCE(NULLIF(h.qualified_name, ''), h.name, ''), h.id",
+                 base);
     }
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(s->db, sqlbuf, CBM_NOT_FOUND, &stmt, NULL) != SQLITE_OK) {
@@ -4096,44 +4156,73 @@ static int arch_routes(cbm_store_t *s, const char *project, const char *path,
 
     int cap = ST_INIT_CAP_8;
     int n = 0;
+    int total = 0;
+    int64_t current_route_id = CBM_NOT_FOUND;
+    int current_handler_cap = 0;
+    bool current_is_shown = false;
     cbm_route_info_t *arr = calloc(cap, sizeof(cbm_route_info_t));
     while (sqlite3_step(stmt) == SQLITE_ROW) {
-        const char *name = (const char *)sqlite3_column_text(stmt, 0);
-        const char *props = (const char *)sqlite3_column_text(stmt, SKIP_ONE);
-        const char *fp = (const char *)sqlite3_column_text(stmt, CBM_SZ_2);
-        if (cbm_is_test_file_path(fp)) {
-            continue;
-        }
-        if (n >= cap) {
-            cap *= ST_GROWTH;
-            arr = safe_realloc(arr, cap * sizeof(cbm_route_info_t));
-        }
+        int64_t route_id = sqlite3_column_int64(stmt, 0);
+        const char *name = (const char *)sqlite3_column_text(stmt, SKIP_ONE);
+        const char *props = (const char *)sqlite3_column_text(stmt, CBM_SZ_2);
+        const char *fp = (const char *)sqlite3_column_text(stmt, ST_COL_3);
+        const char *edge_handler = (const char *)sqlite3_column_text(stmt, ST_COL_4);
 
-        arr[n].method = heap_strdup("");
-        arr[n].path = heap_strdup(name);
-        arr[n].handler = heap_strdup("");
+        if (route_id != current_route_id) {
+            if (current_is_shown) {
+                arch_route_finish_handlers(&arr[n - SKIP_ONE], &current_handler_cap);
+            }
+            current_route_id = route_id;
+            current_handler_cap = 0;
+            current_is_shown = false;
+            if (cbm_is_test_file_path(fp)) {
+                continue;
+            }
 
-        char *val;
-        val = extract_json_string_prop(props, "\"method\"", ST_METHOD_PROP_LEN);
-        if (val) {
-            safe_str_free(&arr[n].method);
-            arr[n].method = val;
+            total++;
+            if (n >= limit) {
+                continue;
+            }
+            if (n >= cap) {
+                cap *= ST_GROWTH;
+                arr = safe_realloc(arr, cap * sizeof(cbm_route_info_t));
+            }
+
+            memset(&arr[n], 0, sizeof(cbm_route_info_t));
+            arr[n].method = heap_strdup("");
+            arr[n].path = heap_strdup(name);
+            arr[n].handler = heap_strdup("");
+
+            char *val;
+            val = extract_json_string_prop(props, "\"method\"", ST_METHOD_PROP_LEN);
+            if (val) {
+                safe_str_free(&arr[n].method);
+                arr[n].method = val;
+            }
+            val = extract_json_string_prop(props, "\"path\"", ST_PATH_PROP_LEN);
+            if (val) {
+                safe_str_free(&arr[n].path);
+                arr[n].path = val;
+            }
+            val = extract_json_string_prop(props, "\"handler\"", ST_HANDLER_PROP_LEN);
+            if (val) {
+                safe_str_free(&arr[n].handler);
+                arr[n].handler = val;
+            }
+            n++;
+            current_is_shown = true;
         }
-        val = extract_json_string_prop(props, "\"path\"", ST_PATH_PROP_LEN);
-        if (val) {
-            safe_str_free(&arr[n].path);
-            arr[n].path = val;
+        if (current_is_shown) {
+            arch_route_add_handler(&arr[n - SKIP_ONE], &current_handler_cap, edge_handler);
         }
-        val = extract_json_string_prop(props, "\"handler\"", ST_HANDLER_PROP_LEN);
-        if (val) {
-            safe_str_free(&arr[n].handler);
-            arr[n].handler = val;
-        }
-        n++;
+    }
+    if (current_is_shown) {
+        arch_route_finish_handlers(&arr[n - SKIP_ONE], &current_handler_cap);
     }
     sqlite3_finalize(stmt);
     out->routes = arr;
     out->route_count = n;
+    out->route_total = total;
     return CBM_STORE_OK;
 }
 
@@ -5787,11 +5876,12 @@ static bool want_aspect(const char **aspects, int aspect_count, const char *name
     return false;
 }
 
-int cbm_store_get_architecture(cbm_store_t *s, const char *project, const char *path,
-                               const char **aspects, int aspect_count,
-                               cbm_architecture_info_t *out) {
+int cbm_store_get_architecture_limited(cbm_store_t *s, const char *project, const char *path,
+                                       const char **aspects, int aspect_count, int result_limit,
+                                       cbm_architecture_info_t *out) {
     memset(out, 0, sizeof(*out));
     int rc;
+    int limit = arch_result_limit(result_limit);
 
     if (want_aspect(aspects, aspect_count, "languages")) {
         rc = arch_languages(s, project, path, out);
@@ -5806,13 +5896,13 @@ int cbm_store_get_architecture(cbm_store_t *s, const char *project, const char *
         }
     }
     if (want_aspect(aspects, aspect_count, "entry_points")) {
-        rc = arch_entry_points(s, project, path, out);
+        rc = arch_entry_points(s, project, path, limit, out);
         if (rc != CBM_STORE_OK) {
             return rc;
         }
     }
     if (want_aspect(aspects, aspect_count, "routes")) {
-        rc = arch_routes(s, project, path, out);
+        rc = arch_routes(s, project, path, limit, out);
         if (rc != CBM_STORE_OK) {
             return rc;
         }
@@ -5855,6 +5945,13 @@ int cbm_store_get_architecture(cbm_store_t *s, const char *project, const char *
     return CBM_STORE_OK;
 }
 
+int cbm_store_get_architecture(cbm_store_t *s, const char *project, const char *path,
+                               const char **aspects, int aspect_count,
+                               cbm_architecture_info_t *out) {
+    return cbm_store_get_architecture_limited(s, project, path, aspects, aspect_count,
+                                              CBM_ARCH_DEFAULT_LIMIT, out);
+}
+
 void cbm_store_architecture_free(cbm_architecture_info_t *out) {
     if (!out) {
         return;
@@ -5877,6 +5974,10 @@ void cbm_store_architecture_free(cbm_architecture_info_t *out) {
         safe_str_free(&out->routes[i].method);
         safe_str_free(&out->routes[i].path);
         safe_str_free(&out->routes[i].handler);
+        for (int j = 0; j < out->routes[i].handler_count; j++) {
+            safe_str_free(&out->routes[i].handlers[j]);
+        }
+        free(out->routes[i].handlers);
     }
     free(out->routes);
     for (int i = 0; i < out->hotspot_count; i++) {
