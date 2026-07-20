@@ -4571,39 +4571,439 @@ static int arch_packages(cbm_store_t *s, const char *project, const char *path,
     return CBM_STORE_OK;
 }
 
-static void classify_layer(const char *pkg, int in, int out_deg, bool has_routes,
-                           bool has_entry_points, const char **layer, const char **reason) {
-    static CBM_TLS char reason_buf[CBM_SZ_128];
-    if (has_entry_points && out_deg > 0 && in == 0) {
-        *layer = "entry";
-        *reason = "has entry points, only outbound calls";
+/* ── Evidence-based layer classification (PR C) ───────────────────
+ *
+ * The previous classifier assigned layers (entry/api/core/leaf/internal)
+ * purely from fan-in/fan-out heuristics, which mixed frontend, backend,
+ * scripts and tools in a monorepo and could not be justified without
+ * re-reading bootstrap/project files. PR C introduces project-root
+ * detection via marker files (Program.cs, main.ts, angular.json,
+ * package.json, *.csproj) and .csproj metadata extraction, then classifies
+ * each package with an explicit `confidence` and `evidence` string. Fan-in/
+ * fan-out is retained only as a low-confidence fallback. */
+
+#define ARCH_MARKER_PROGRAM_CS "Program.cs"
+#define ARCH_MARKER_MAIN_TS "main.ts"
+#define ARCH_MARKER_ANGULAR_JSON "angular.json"
+#define ARCH_MARKER_PACKAGE_JSON "package.json"
+#define ARCH_MARKER_CSPROJ_EXT ".csproj"
+
+typedef struct {
+    const char *pkg;         /* package name (QN segment[2]) this root maps to */
+    const char *root_dir;    /* directory prefix of the marker file */
+    const char *type;        /* "frontend" | "backend" | "library" | "tool" */
+    const char *marker_base; /* basename of the marker file (owned) */
+    bool has_entry;          /* root contains an entry marker (Program.cs/main.ts) */
+    const char *sdk;         /* csproj Sdk attribute (owned, may be NULL) */
+    const char *output_type; /* csproj OutputType (owned, may be NULL) */
+    const char *target_fw;   /* csproj TargetFramework (owned, may be NULL) */
+} arch_root_t;
+
+typedef struct {
+    arch_root_t *items;
+    int count;
+    int cap;
+} arch_root_list_t;
+
+static void arch_root_list_free(arch_root_list_t *l) {
+    if (!l || !l->items) {
         return;
     }
+    for (int i = 0; i < l->count; i++) {
+        safe_str_free(&l->items[i].pkg);
+        safe_str_free(&l->items[i].root_dir);
+        safe_str_free(&l->items[i].marker_base);
+        safe_str_free(&l->items[i].sdk);
+        safe_str_free(&l->items[i].output_type);
+        safe_str_free(&l->items[i].target_fw);
+    }
+    free(l->items);
+    l->items = NULL;
+    l->count = 0;
+    l->cap = 0;
+}
+
+static bool arch_ends_with(const char *s, const char *suffix) {
+    size_t ls = strlen(s);
+    size_t lf = strlen(suffix);
+    if (lf > ls) {
+        return false;
+    }
+    return strcmp(s + ls - lf, suffix) == 0;
+}
+
+static const char *arch_basename(const char *path) {
+    const char *slash = strrchr(path, '/');
+    return slash ? slash + 1 : path;
+}
+
+static void arch_dirname(const char *path, char *out, size_t sz) {
+    const char *slash = strrchr(path, '/');
+    if (!slash) {
+        snprintf(out, sz, ".");
+        return;
+    }
+    if (slash == path) {
+        snprintf(out, sz, "/");
+        return;
+    }
+    size_t len = (size_t)(slash - path);
+    if (len >= sz) {
+        len = sz - 1;
+    }
+    memcpy(out, path, len);
+    out[len] = '\0';
+}
+
+/* Classify a marker basename into a project type. Returns NULL if not a marker. */
+static const char *arch_marker_type(const char *base) {
+    if (strcmp(base, ARCH_MARKER_PROGRAM_CS) == 0) {
+        return "backend";
+    }
+    if (strcmp(base, ARCH_MARKER_MAIN_TS) == 0) {
+        return "frontend";
+    }
+    if (strcmp(base, ARCH_MARKER_ANGULAR_JSON) == 0) {
+        return "frontend";
+    }
+    if (strcmp(base, ARCH_MARKER_PACKAGE_JSON) == 0) {
+        return "frontend";
+    }
+    if (arch_ends_with(base, ARCH_MARKER_CSPROJ_EXT)) {
+        return "backend";
+    }
+    return NULL;
+}
+
+static bool arch_marker_is_entry(const char *base) {
+    return strcmp(base, ARCH_MARKER_PROGRAM_CS) == 0 || strcmp(base, ARCH_MARKER_MAIN_TS) == 0;
+}
+
+/* Extract the first attribute value for `attr` from an opening tag like
+ * <Project Sdk="Microsoft.NET.Sdk.Web">. Returns NULL if not found. */
+static char *arch_xml_attr(const char *tag_start, const char *attr) {
+    size_t alen = strlen(attr);
+    const char *p = tag_start;
+    while (*p && *p != '>') {
+        if (strncmp(p, attr, alen) == 0 && p[alen] == '=') {
+            const char *q = p + alen + 1;
+            char quote = *q;
+            if (quote != '"' && quote != '\'') {
+                return NULL;
+            }
+            q++;
+            const char *end = strchr(q, quote);
+            if (!end) {
+                return NULL;
+            }
+            size_t len = (size_t)(end - q);
+            char *out = malloc(len + 1);
+            memcpy(out, q, len);
+            out[len] = '\0';
+            return out;
+        }
+        p++;
+    }
+    return NULL;
+}
+
+/* Find the text content of the first <tag>...</tag> in buf. Owned result. */
+static char *arch_xml_text(const char *buf, const char *tag) {
+    char open[64];
+    snprintf(open, sizeof(open), "<%s>", tag);
+    const char *start = strstr(buf, open);
+    if (!start) {
+        /* Try with attributes: <Tag attr="..."> */
+        char pat[64];
+        snprintf(pat, sizeof(pat), "<%s ", tag);
+        start = strstr(buf, pat);
+        if (!start) {
+            return NULL;
+        }
+        const char *gt = strchr(start, '>');
+        if (!gt) {
+            return NULL;
+        }
+        start = gt + 1;
+    } else {
+        start += strlen(open);
+    }
+    char close[64];
+    snprintf(close, sizeof(close), "</%s>", tag);
+    const char *end = strstr(start, close);
+    if (!end) {
+        return NULL;
+    }
+    /* Trim whitespace. */
+    while (start < end && (*start == ' ' || *start == '\t' || *start == '\n' || *start == '\r')) {
+        start++;
+    }
+    while (end > start &&
+           (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\n' || end[-1] == '\r')) {
+        end--;
+    }
+    size_t len = (size_t)(end - start);
+    char *out = malloc(len + 1);
+    memcpy(out, start, len);
+    out[len] = '\0';
+    return out;
+}
+
+/* Read a .csproj from disk (root_path + '/' + rel) and extract Sdk,
+ * OutputType and TargetFramework into the provided out pointers (owned). */
+static void arch_read_csproj(const char *root_path, const char *rel, const char **sdk,
+                             const char **output_type, const char **target_fw) {
+    *sdk = NULL;
+    *output_type = NULL;
+    *target_fw = NULL;
+    if (!root_path || !rel) {
+        return;
+    }
+    char path[CBM_SZ_1K];
+    snprintf(path, sizeof(path), "%s/%s", root_path, rel);
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        return;
+    }
+    char buf[CBM_SZ_16K];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+    const char *proj = strstr(buf, "<Project");
+    if (proj) {
+        const char *gt = strchr(proj, '>');
+        if (gt) {
+            char tag[256];
+            size_t tlen = (size_t)(gt - proj) + 1;
+            if (tlen >= sizeof(tag)) {
+                tlen = sizeof(tag) - 1;
+            }
+            memcpy(tag, proj, tlen);
+            tag[tlen] = '\0';
+            *sdk = arch_xml_attr(tag, "Sdk");
+        }
+    }
+    *output_type = arch_xml_text(buf, "OutputType");
+    *target_fw = arch_xml_text(buf, "TargetFramework");
+}
+
+/* Append a root to the list (takes ownership of owned fields). */
+static void arch_root_list_push(arch_root_list_t *l, arch_root_t r) {
+    if (l->count >= l->cap) {
+        l->cap = l->cap ? l->cap * 2 : 8;
+        l->items = realloc(l->items, (size_t)l->cap * sizeof(arch_root_t));
+    }
+    l->items[l->count++] = r;
+}
+
+/* Collect project roots from marker File nodes. */
+static int arch_collect_roots(cbm_store_t *s, const char *project, const char *path,
+                              const char *root_path, arch_root_list_t *out) {
+    out->items = NULL;
+    out->count = 0;
+    out->cap = 0;
+
+    char norm[CBM_SZ_512];
+    char like[CBM_SZ_512];
+    bool scoped = arch_path_prepare(path, norm, sizeof(norm), like, sizeof(like));
+    char sqlbuf[ST_SQL_BUF];
+    const char *base_sql = "SELECT file_path FROM nodes WHERE project=?1 AND label='File' "
+                           "AND file_path IS NOT NULL AND file_path != ''";
+    if (scoped) {
+        snprintf(sqlbuf, sizeof(sqlbuf), "%s%s", base_sql, arch_path_scope_sql());
+    } else {
+        snprintf(sqlbuf, sizeof(sqlbuf), "%s", base_sql);
+    }
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(s->db, sqlbuf, CBM_NOT_FOUND, &stmt, NULL) != SQLITE_OK || !stmt) {
+        if (stmt) {
+            sqlite3_finalize(stmt);
+        }
+        return CBM_STORE_OK;
+    }
+    bind_text(stmt, SKIP_ONE, project);
+    if (scoped) {
+        arch_bind_path_scope(stmt, ST_COL_2, ST_COL_3, norm, like);
+    }
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char *fp = (const char *)sqlite3_column_text(stmt, 0);
+        if (!fp || !fp[0]) {
+            continue;
+        }
+        const char *base = arch_basename(fp);
+        const char *type = arch_marker_type(base);
+        if (!type) {
+            continue;
+        }
+        char dir[CBM_SZ_512];
+        arch_dirname(fp, dir, sizeof(dir));
+        /* Resolve the package name for this root dir from a node under it. */
+        char *pkg = NULL;
+        sqlite3_stmt *pstmt = NULL;
+        const char *pkg_sql =
+            "SELECT qualified_name FROM nodes WHERE project=?1 AND file_path LIKE ?2 "
+            "AND qualified_name IS NOT NULL AND qualified_name != '' LIMIT 1";
+        if (sqlite3_prepare_v2(s->db, pkg_sql, CBM_NOT_FOUND, &pstmt, NULL) == SQLITE_OK && pstmt) {
+            char like_dir[CBM_SZ_512];
+            snprintf(like_dir, sizeof(like_dir), "%s/%%", dir);
+            bind_text(pstmt, SKIP_ONE, project);
+            bind_text(pstmt, ST_COL_2, like_dir);
+            if (sqlite3_step(pstmt) == SQLITE_ROW) {
+                const char *qn = (const char *)sqlite3_column_text(pstmt, 0);
+                if (qn) {
+                    pkg = heap_strdup(cbm_qn_to_package(qn));
+                }
+            }
+            sqlite3_finalize(pstmt);
+        }
+        arch_root_t r;
+        memset(&r, 0, sizeof(r));
+        r.pkg = pkg ? pkg : heap_strdup("");
+        r.root_dir = heap_strdup(dir);
+        r.type = type;
+        r.marker_base = heap_strdup(base);
+        r.has_entry = arch_marker_is_entry(base);
+        if (arch_ends_with(base, ARCH_MARKER_CSPROJ_EXT)) {
+            arch_read_csproj(root_path, fp, &r.sdk, &r.output_type, &r.target_fw);
+            /* A .csproj with OutputType=Library and no entry marker is a
+             * library, not a backend service. */
+            if (r.output_type && strcmp(r.output_type, "Library") == 0) {
+                r.type = "library";
+            }
+        }
+        arch_root_list_push(out, r);
+    }
+    sqlite3_finalize(stmt);
+    return CBM_STORE_OK;
+}
+
+/* Find the root whose package matches `pkg`. Prefers roots with entry markers. */
+static const arch_root_t *arch_find_root(const arch_root_list_t *l, const char *pkg) {
+    const arch_root_t *fallback = NULL;
+    for (int i = 0; i < l->count; i++) {
+        if (strcmp(l->items[i].pkg, pkg) == 0) {
+            if (l->items[i].has_entry) {
+                return &l->items[i];
+            }
+            if (!fallback) {
+                fallback = &l->items[i];
+            }
+        }
+    }
+    return fallback;
+}
+
+/* The evidence-based classifier. Writes layer/reason/confidence/evidence. */
+static void classify_layer_evidence(const char *pkg, int in, int out_deg, bool has_routes,
+                                    bool has_entry_points, const arch_root_list_t *roots,
+                                    const char **layer, const char **reason,
+                                    const char **confidence, const char **evidence) {
+    (void)pkg;
+    static CBM_TLS char reason_buf[CBM_SZ_256];
+    static CBM_TLS char evidence_buf[CBM_SZ_256];
+    const arch_root_t *root = arch_find_root(roots, pkg);
+
+    *confidence = "unknown";
+    *evidence = "no project markers and no significant call structure";
+
+    if (has_entry_points && root && root->has_entry) {
+        /* This package contains the application entry marker. */
+        if (has_routes) {
+            *layer = "api";
+            snprintf(reason_buf, sizeof(reason_buf), "entry marker %s with route definitions",
+                     root->marker_base);
+            *reason = reason_buf;
+            *confidence = "high";
+            snprintf(evidence_buf, sizeof(evidence_buf), "entry marker: %s; routes present",
+                     root->marker_base);
+            *evidence = evidence_buf;
+            return;
+        }
+        *layer = "entry";
+        snprintf(reason_buf, sizeof(reason_buf), "entry marker %s, only outbound calls",
+                 root->marker_base);
+        *reason = reason_buf;
+        *confidence = "high";
+        snprintf(evidence_buf, sizeof(evidence_buf), "entry marker: %s", root->marker_base);
+        *evidence = evidence_buf;
+        return;
+    }
+
     if (has_routes) {
         *layer = "api";
         *reason = "has HTTP route definitions";
+        *confidence = "high";
+        *evidence = "route definitions present";
+        return;
+    }
+
+    if (root) {
+        /* Package belongs to a detected project root but has no entry/routes. */
+        if (root->type && strcmp(root->type, "library") == 0) {
+            *layer = "core";
+            *reason = "library project (no entry, no routes)";
+            *confidence = "medium";
+            snprintf(evidence_buf, sizeof(evidence_buf), "project root: %s (%s", root->root_dir,
+                     root->marker_base);
+            if (root->target_fw) {
+                size_t cur = strlen(evidence_buf);
+                snprintf(evidence_buf + cur, sizeof(evidence_buf) - cur, ", %s", root->target_fw);
+            }
+            size_t cur = strlen(evidence_buf);
+            snprintf(evidence_buf + cur, sizeof(evidence_buf) - cur, ")");
+            *evidence = evidence_buf;
+            return;
+        }
+        /* Frontend/backend root member without entry marker: treat as internal
+         * with medium confidence, citing the root. */
+        if (out_deg == 0 && in > 0) {
+            *layer = "leaf";
+            *reason = "only inbound calls, no outbound";
+            *confidence = "medium";
+        } else {
+            *layer = "internal";
+            snprintf(reason_buf, sizeof(reason_buf), "fan-in=%d, fan-out=%d", in, out_deg);
+            *reason = reason_buf;
+            *confidence = "medium";
+        }
+        snprintf(evidence_buf, sizeof(evidence_buf), "project root: %s (%s)", root->root_dir,
+                 root->marker_base);
+        *evidence = evidence_buf;
+        return;
+    }
+
+    /* No project markers at all: fall back to fan-in/fan-out with low confidence. */
+    if (in == 0 && out_deg > 0) {
+        *layer = "entry";
+        *reason = "only outbound calls";
+        *confidence = "low";
+        *evidence = "only outbound calls (no project markers)";
+        return;
+    }
+    if (out_deg == 0 && in > 0) {
+        *layer = "leaf";
+        *reason = "only inbound calls, no outbound";
+        *confidence = "low";
+        *evidence = "only inbound calls (no project markers)";
         return;
     }
     if (in > out_deg && in > ST_MIN_INDEGREE) {
         snprintf(reason_buf, sizeof(reason_buf), "high fan-in (%d in, %d out)", in, out_deg);
         *layer = "core";
         *reason = reason_buf;
-        return;
-    }
-    if (out_deg == 0 && in > 0) {
-        *layer = "leaf";
-        *reason = "only inbound calls, no outbound";
-        return;
-    }
-    if (in == 0 && out_deg > 0) {
-        *layer = "entry";
-        *reason = "only outbound calls";
+        *confidence = "low";
+        snprintf(evidence_buf, sizeof(evidence_buf),
+                 "high fan-in (%d in, %d out) — no project markers", in, out_deg);
+        *evidence = evidence_buf;
         return;
     }
     snprintf(reason_buf, sizeof(reason_buf), "fan-in=%d, fan-out=%d", in, out_deg);
     *layer = "internal";
     *reason = reason_buf;
-    (void)pkg;
+    *confidence = "low";
+    snprintf(evidence_buf, sizeof(evidence_buf), "fan-in=%d, fan-out=%d — no project markers", in,
+             out_deg);
+    *evidence = evidence_buf;
 }
 
 /* Find or insert a package name, returning its index. Returns -1 if full. */
@@ -4686,6 +5086,15 @@ static int arch_layers(cbm_store_t *s, const char *project, const char *path,
                                    "json_extract(properties, '$.is_entry_point') = 1",
                                    project, path, entry_pkgs, CBM_SZ_32);
 
+    /* Collect project roots from marker files (PR C). */
+    cbm_project_t proj_info;
+    bool have_proj = (cbm_store_get_project(s, project, &proj_info) == CBM_STORE_OK);
+    arch_root_list_t roots;
+    arch_collect_roots(s, project, path, have_proj ? proj_info.root_path : NULL, &roots);
+    if (have_proj) {
+        cbm_project_free_fields(&proj_info);
+    }
+
     /* Compute fan-in/out per package */
     char *all_pkgs[CBM_SZ_64];
     int fan_in[CBM_SZ_64];
@@ -4713,7 +5122,7 @@ static int arch_layers(cbm_store_t *s, const char *project, const char *path,
         find_or_add_pkg(all_pkgs, &npkgs, ST_MAX_PKGS, entry_pkgs[i]);
     }
 
-    /* Classify each package */
+    /* Classify each package with evidence + confidence. */
     out->layers = (npkgs > 0) ? calloc(npkgs, sizeof(cbm_package_layer_t)) : NULL;
     out->layer_count = npkgs;
     for (int i = 0; i < npkgs; i++) {
@@ -4721,10 +5130,15 @@ static int arch_layers(cbm_store_t *s, const char *project, const char *path,
         bool has_entry = pkg_in_list(all_pkgs[i], entry_pkgs, nepkgs);
         const char *layer;
         const char *reason;
-        classify_layer(all_pkgs[i], fan_in[i], fan_out[i], has_route, has_entry, &layer, &reason);
+        const char *confidence;
+        const char *evidence;
+        classify_layer_evidence(all_pkgs[i], fan_in[i], fan_out[i], has_route, has_entry, &roots,
+                                &layer, &reason, &confidence, &evidence);
         out->layers[i].name = all_pkgs[i]; /* transfer ownership */
         out->layers[i].layer = heap_strdup(layer);
         out->layers[i].reason = heap_strdup(reason);
+        out->layers[i].confidence = heap_strdup(confidence);
+        out->layers[i].evidence = heap_strdup(evidence);
     }
 
     /* Sort layers by name */
@@ -4750,6 +5164,7 @@ static int arch_layers(cbm_store_t *s, const char *project, const char *path,
     for (int i = 0; i < nepkgs; i++) {
         free(entry_pkgs[i]);
     }
+    arch_root_list_free(&roots);
 
     return CBM_STORE_OK;
 }
@@ -6000,6 +6415,8 @@ void cbm_store_architecture_free(cbm_architecture_info_t *out) {
         safe_str_free(&out->layers[i].name);
         safe_str_free(&out->layers[i].layer);
         safe_str_free(&out->layers[i].reason);
+        safe_str_free(&out->layers[i].confidence);
+        safe_str_free(&out->layers[i].evidence);
     }
     free(out->layers);
     for (int i = 0; i < out->cluster_count; i++) {

@@ -547,6 +547,13 @@ typedef struct {
     const char *name;
     const char *layer;
     const char *reason;
+    /* Evidence-based layer classification (PR C). `confidence` is one of
+     * "high" | "medium" | "low" | "unknown". `evidence` is a short,
+     * human-readable summary of the signals used to assign the layer,
+     * so callers can justify the architecture without re-reading
+     * bootstrap/project files. */
+    const char *confidence;
+    const char *evidence;
 } cbm_package_layer_t;
 
 typedef struct {

@@ -2775,6 +2775,10 @@ static char *handle_get_architecture(cbm_mcp_server_t *srv, const char *args) {
                                    arch.layers[i].layer ? arch.layers[i].layer : "");
             yyjson_mut_obj_add_str(doc, item, "reason",
                                    arch.layers[i].reason ? arch.layers[i].reason : "");
+            yyjson_mut_obj_add_str(doc, item, "confidence",
+                                   arch.layers[i].confidence ? arch.layers[i].confidence : "");
+            yyjson_mut_obj_add_str(doc, item, "evidence",
+                                   arch.layers[i].evidence ? arch.layers[i].evidence : "");
             yyjson_mut_arr_add_val(layers, item);
         }
         yyjson_mut_obj_add_val(doc, root, "layers", layers);
