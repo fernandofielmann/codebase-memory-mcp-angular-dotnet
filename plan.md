@@ -38,6 +38,8 @@ Repositorio:
   CLI y README completado en el follow-up PR 27.
 - [x] Cerrados los issues asociados a PRs ya fusionados: #11 (PR 6),
   #9/#10/#7 (PRs A/B/C).
+- [x] Implementada y validada localmente la PR 11 para invocaciones genéricas
+  C# (`AddScoped<TService,TImpl>`, `DoThing<int,string>`); PR #29 abierta.
 - [ ] Continuar después el roadmap en PRs pequeñas y verificables.
 
 El fork tiene habilitados los issues y no ejecuta checks automáticos en las PRs.
@@ -49,6 +51,8 @@ La PR 6 (Angular Router) está fusionada en `main` como PR 25 (merge commit `ce1
 su follow-up de registro de esquema/CLI/README como PR 27 (merge commit `fbf6ab4`).
 Issues cerrados: #7, #9, #10 y #11.
 El bloque de calidad de `get_architecture` (A + B + C) queda cerrado.
+La PR 11 (invocaciones genéricas C#) está implementada y validada localmente;
+PR #29 abierta en el fork (sin fusionar todavía).
 
 ## Prioridad inmediata: calidad de `get_architecture`
 
@@ -210,7 +214,8 @@ Validación privada `ppi-ntv` (binario nuevo instalado el 20 de julio de 2026):
 2. PR prioritaria B: completitud de rutas y handlers. ✅ fusionada (PR 8).
 3. PR prioritaria C: clasificación de capas basada en evidencia. ✅ fusionada (PR 23).
 4. PR 6 (Angular Router y lazy loading). ✅ fusionada (PR 25).
-5. Retomar PR 11 y continuar el roadmap existente (PR 7/PR 8 dependen de PR 6). ← siguiente.
+5. PR 11 (invocaciones genéricas C#). ✅ implementada y validada localmente; PR #29 abierta.
+6. PR 12 (DI de .NET, depende de PR 11). ← siguiente tras fusionar PR 11.
 
 ## Trabajo completado
 
@@ -495,17 +500,67 @@ Zonas principales:
 
 #### PR 11: tipos genéricos en invocaciones C#
 
-- [ ] Preservar los argumentos de `generic_name` en `CBMCall`.
-- [ ] Cubrir invocaciones como `AddScoped<TService,TImpl>` y tipos de respuesta.
-- [ ] Añadir fixtures positivos y negativos de extracción antes de consumir
+PR: https://github.com/fernandofielmann/codebase-memory-mcp-angular-dotnet/pull/29  
+Rama: `feat/csharp-generic-invocations`  
+Commit: `324c757` (PR abierta, sin fusionar)
+
+- [x] Preservar los argumentos de `generic_name` en `CBMCall`.
+- [x] Cubrir invocaciones como `AddScoped<TService,TImpl>` y tipos de respuesta.
+- [x] Añadir fixtures positivos y negativos de extracción antes de consumir
   esta información en otros pases.
+
+Implementado:
+
+- Nuevos campos `generic_args` (cadena comma-joined, arena) y
+  `generic_arg_count` en `CBMCall` (`internal/cbm/cbm.h`).
+- `extract_callee_from_fields` resuelve ahora el callee para invocaciones
+  genéricas C# tanto bare (`generic_name` como `function`) como member
+  (`member_access_expression` cuyo `name` es `generic_name`), devolviendo un
+  callee limpio («AddScoped» / «recv.AddScoped») sin `<...>`. La gramática C#
+  de tree-sitter expone el identificador genérico como primer hijo `identifier`
+  de `generic_name`, no vía el campo `name`.
+- `extract_call_generic_args` captura los argumentos de tipo desde
+  `type_argument_list`, unidos por coma y conservando el texto fuente de cada
+  argumento para que los genéricos anidados (`Dictionary<string,int>`) round-trip
+  sin cambios; escribe el conteo en `CBMCall.generic_arg_count`.
+- `handle_calls` rellena los nuevos campos. Superficie sólo de extracción,
+  consumida por pases posteriores (PR 12 DI).
 
 Zonas principales:
 
 - `internal/cbm/cbm.h`
 - `internal/cbm/extract_calls.c`
-- `internal/cbm/lsp/cs_lsp.c`
 - `tests/test_extraction.c`
+
+Validación local:
+
+- Test `csharp_generic_invocations`: callee member limpio (sin `<`),
+  `generic_arg_count == 2`, `generic_args == "IOrderService,OrderService"`;
+  bare `DoThing<int,string>()` ya no se descarta y conserva `int,string`;
+  hermano no genérico con `count == 0` y `generic_args == NULL`; las tres
+  formas de registro DI (AddScoped/AddSingleton/AddTransient) con dos
+  argumentos de tipo.
+- Suite dirigida `extraction`: 220 pruebas pasaron.
+- Suite dirigida `edge_types_probe`: 63 pruebas pasaron.
+- `make -f Makefile.cbm lint-ci` (clang-format + cppcheck + NOLINT): correcto.
+- `scripts/test.sh` (suite completa): 6.012 pruebas pasaron, 1 omitida.
+
+Validación privada `ppi-ntv` (binario nuevo en `build/c/`, no instalado):
+
+- Índice `full`: 13.238 nodos y 35.339 aristas, 0 errores.
+- Probe sobre `DependencyInjectionExtension.cs` real: 37 llamadas genéricas
+  capturadas con `generic_args` correctos, p. ej.
+  `AddScoped<ISqlClient,SqlClient>`, `AddSingleton<ICountryProvider,CountryProvider>`,
+  `IUnitOfWork<NtvContext>,UnitOfWork<NtvContext>` (genérico anidado),
+  `AddDbContextPool<NtvContext>`, `GetRequiredService<IServiceScopeFactory>`,
+  `GetService<NtvContext>`.
+- Hallazgo para PR 12: el `callee_name` de llamadas encadenadas es el texto
+  completo de la cadena (multi-línea); convendrá usar el método trailing +
+  `generic_args` en PR 12. Es comportamiento pre-existente, no regresión de
+  PR 11.
+
+Pendiente: instalar el binario nuevo en `~/.local/bin/` (el MCP server sigue
+usando el binario anterior sin PR 11) y fusionar PR #29.
 
 #### PR 12: DI de .NET
 
@@ -554,12 +609,12 @@ Zonas principales:
 
 ## Dependencias y orden recomendado
 
-1. PR 5 completada; PR 6 (Angular Router) completada. Continuar con PR 11 como
-   siguiente base independiente, y PR 7/PR 8 que ya tienen satisfecha la
-   dependencia sobre PR 6.
+1. PR 5 completada; PR 6 (Angular Router) completada. PR 11 (invocaciones
+   genéricas C#) implementada y validada localmente, PR #29 abierta. PR 7/PR 8
+   ya tienen satisfecha la dependencia sobre PR 6.
 2. Angular: PR 6 ✅ → PR 7 y PR 8 → PR 9 → PR 10; las dependencias sobre PR 5
    ya están satisfechas.
-3. .NET: PR 11 → PR 12 → PR 13.
+3. .NET: PR 11 ✅ (validada, PR abierta) → PR 12 → PR 13.
 4. PR 14 comienza cuando PR 11 y el matching HTTP sigan estables.
 5. PR 15 cierra el roadmap después de PR 9, PR 12 y PR 14.
 
