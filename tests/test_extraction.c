@@ -2923,6 +2923,54 @@ TEST(extract_angular_component_literal_metadata) {
     PASS();
 }
 
+TEST(extract_angular_routes_array) {
+    CBMFileResult *r = extract(
+        "import { Routes } from '@angular/router';\n"
+        "import { OrdersComponent } from './orders.component';\n"
+        "export const routes: Routes = [\n"
+        "  { path: '', component: OrdersComponent },\n"
+        "  { path: 'orders/:id', component: OrdersComponent },\n"
+        "  { path: 'admin', loadComponent: () => import('./admin.component').then(m => "
+        "m.AdminComponent) },\n"
+        "  { path: 'lazy', loadChildren: () => import('./lazy.module').then(m => m.LazyModule) },\n"
+        "  { path: 'old', redirectTo: '/new' },\n"
+        "  { path: 'parent', children: [\n"
+        "    { path: 'child', component: OrdersComponent }\n"
+        "  ] }\n"
+        "];\n",
+        CBM_LANG_TYPESCRIPT, "t", "app.routes.ts");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+    ASSERT_EQ(r->nav_routes.count, 7);
+    /* root route */
+    ASSERT_STR_EQ(r->nav_routes.items[0].path, "");
+    ASSERT_STR_EQ(r->nav_routes.items[0].component, "OrdersComponent");
+    /* param route */
+    ASSERT_STR_EQ(r->nav_routes.items[1].path, "orders/:id");
+    /* loadComponent lazy import */
+    ASSERT_STR_EQ(r->nav_routes.items[2].load_component_module, "./admin.component");
+    ASSERT(r->nav_routes.items[2].component == NULL);
+    /* loadChildren lazy import */
+    ASSERT_STR_EQ(r->nav_routes.items[3].load_children_module, "./lazy.module");
+    /* redirect */
+    ASSERT_STR_EQ(r->nav_routes.items[4].redirect_to, "/new");
+    /* nested children are flattened into the same array with the parent
+     * path prefix joined (Angular resolves the full path at runtime). */
+    bool found_child = false;
+    for (int i = 0; i < r->nav_routes.count; i++) {
+        if (r->nav_routes.items[i].path &&
+            strcmp(r->nav_routes.items[i].path, "parent/child") == 0) {
+            found_child = true;
+            ASSERT_STR_EQ(r->nav_routes.items[i].component, "OrdersComponent");
+        }
+    }
+    ASSERT(found_child);
+    /* const name captured for DECLARES_ROUTE attribution */
+    ASSERT_STR_EQ(r->nav_routes.items[0].const_name, "routes");
+    cbm_free_result(r);
+    PASS();
+}
+
 TEST(extract_angular_definition_kinds) {
     CBMFileResult *r =
         extract("import { Directive, Injectable, NgModule, Pipe } from '@angular/core';\n"
@@ -4045,6 +4093,7 @@ SUITE(extraction) {
     RUN_TEST(js_index_module_qn_not_collide_with_folder);
     RUN_TEST(python_regular_module_qn_unchanged);
     RUN_TEST(extract_angular_component_literal_metadata);
+    RUN_TEST(extract_angular_routes_array);
     RUN_TEST(extract_angular_definition_kinds);
     RUN_TEST(extract_angular_rejects_dynamic_or_ambiguous_metadata);
     RUN_TEST(extract_angular_namespace_decorator);

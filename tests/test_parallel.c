@@ -1144,6 +1144,98 @@ TEST(lsp_resolve_misattribution_is_bounded) {
     PASS();
 }
 
+/* ── Angular Router nav-route parity (sequential vs parallel) ────────
+ * A minimal Angular fixture: a routes file plus the component/module files
+ * it references via `component`, `loadComponent`, and `loadChildren`. Both
+ * pipeline modes must emit the same set of ROUTES_TO / REDIRECTS_TO /
+ * LAZY_LOADS / DECLARES_ROUTE edges and NavigationRoute nodes. */
+TEST(parallel_angular_nav_routes_parity) {
+    char tmpdir[256];
+    snprintf(tmpdir, sizeof(tmpdir), "/tmp/cbm_navpar_XXXXXX");
+    if (!cbm_mkdtemp(tmpdir))
+        FAIL("mkdtemp failed");
+    for (char *p = tmpdir; *p; p++)
+        if (*p == '\\')
+            *p = '/';
+
+    const char *routes_ts =
+        "import { Routes } from '@angular/router';\n"
+        "import { OrdersComponent } from './orders.component';\n"
+        "export const routes: Routes = [\n"
+        "  { path: '', component: OrdersComponent },\n"
+        "  { path: 'admin', loadComponent: () => import('./admin.component').then(m => "
+        "m.AdminComponent) },\n"
+        "  { path: 'lazy', loadChildren: () => import('./lazy.module').then(m => m.LazyModule) },\n"
+        "  { path: 'old', redirectTo: '/new' }\n"
+        "];\n";
+    const char *orders_ts = "import { Component } from '@angular/core';\n"
+                            "@Component({ selector: 'app-orders', template: '' })\n"
+                            "export class OrdersComponent {}\n";
+    const char *admin_ts = "import { Component } from '@angular/core';\n"
+                           "@Component({ selector: 'app-admin', template: '' })\n"
+                           "export class AdminComponent {}\n";
+    const char *lazy_ts = "import { NgModule } from '@angular/core';\n"
+                          "export class LazyModule {}\n";
+
+    struct {
+        const char *name;
+        const char *content;
+    } f[] = {
+        {"app.routes.ts", routes_ts},
+        {"orders.component.ts", orders_ts},
+        {"admin.component.ts", admin_ts},
+        {"lazy.module.ts", lazy_ts},
+    };
+    char path[512];
+    for (int i = 0; i < 4; i++) {
+        snprintf(path, sizeof(path), "%s/%s", tmpdir, f[i].name);
+        FILE *fp = fopen(path, "w");
+        if (!fp) {
+            th_rmtree(tmpdir);
+            FAIL("write failed");
+        }
+        fputs(f[i].content, fp);
+        fclose(fp);
+    }
+
+    cbm_discover_opts_t opts = {.mode = CBM_MODE_FULL};
+    cbm_file_info_t *files = NULL;
+    int file_count = 0;
+    if (cbm_discover(tmpdir, &opts, &files, &file_count) != 0) {
+        th_rmtree(tmpdir);
+        FAIL("discover failed");
+    }
+
+    cbm_gbuf_t *seq = run_sequential("navpar", tmpdir, files, file_count);
+    cbm_gbuf_t *par = run_parallel("navpar", tmpdir, files, file_count, 2);
+
+    ASSERT_NOT_NULL(seq);
+    ASSERT_NOT_NULL(par);
+
+    /* NavigationRoute node count must match. */
+    const cbm_gbuf_node_t **seq_nodes_arr = NULL, **par_nodes_arr = NULL;
+    int seq_nodes = 0, par_nodes = 0;
+    cbm_gbuf_find_by_label(seq, "NavigationRoute", &seq_nodes_arr, &seq_nodes);
+    cbm_gbuf_find_by_label(par, "NavigationRoute", &par_nodes_arr, &par_nodes);
+    ASSERT_GT(seq_nodes, 0);
+    ASSERT_EQ(seq_nodes, par_nodes);
+
+    /* Each edge type must be present and match between modes. */
+    const char *etypes[] = {"ROUTES_TO", "REDIRECTS_TO", "LAZY_LOADS", "DECLARES_ROUTE"};
+    for (size_t i = 0; i < sizeof(etypes) / sizeof(etypes[0]); i++) {
+        int s = cbm_gbuf_edge_count_by_type(seq, etypes[i]);
+        int p = cbm_gbuf_edge_count_by_type(par, etypes[i]);
+        ASSERT_GT(s, 0);
+        ASSERT_EQ(s, p);
+    }
+
+    cbm_gbuf_free(seq);
+    cbm_gbuf_free(par);
+    cbm_discover_free(files, file_count);
+    th_rmtree(tmpdir);
+    PASS();
+}
+
 /* ── Suite Registration ──────────────────────────────────────────── */
 
 SUITE(parallel) {
@@ -1176,6 +1268,7 @@ SUITE(parallel) {
     RUN_TEST(parallel_total_edges);
     RUN_TEST(parallel_empty_files);
     RUN_TEST(parallel_args_json_no_overflow);
+    RUN_TEST(parallel_angular_nav_routes_parity);
 
     /* Cleanup shared state */
     parity_teardown();

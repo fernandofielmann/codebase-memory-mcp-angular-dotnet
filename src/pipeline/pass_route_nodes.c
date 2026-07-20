@@ -1413,6 +1413,260 @@ static void create_sveltekit_routes(cbm_gbuf_t *gb) {
     }
 }
 
+/* ── Angular Router navigation routes ──────────────────────────────
+ *
+ * Materialize NavigationRoute nodes and ROUTES_TO / REDIRECTS_TO /
+ * LAZY_LOADS / DECLARES_ROUTE edges for one file's extracted route
+ * entries (CBMNavRoute). Called from the definitions pass (sequential)
+ * and the parallel build pass — keep both call sites in sync. Navigation
+ * routes are kept out of the HTTP Route namespace and the HTTP /
+ * cross_service matching machinery; they only ever link to component
+ * classes, lazy-loaded module files, or other navigation routes
+ * (redirects), so they never participate in cross-service DATA_FLOWS. */
+
+/* Build a stable, unique QN for a navigation route path. The root route
+ * (empty path) maps to "__navroute__/" so it cannot collide with a
+ * non-root entry and is recognisable as the application root. */
+static void nav_route_qn(const char *path, char *out, size_t outsz) {
+    if (!path || !path[0]) {
+        snprintf(out, outsz, "__navroute__/");
+        return;
+    }
+    snprintf(out, outsz, "__navroute__/%s", path);
+}
+
+/* Find a component class node by name, preferring Class-labeled nodes
+ * (Angular @Component classes are modeled as Class defs). Falls back to
+ * the first node with a matching name if no Class is found. */
+static const cbm_gbuf_node_t *find_component_node(cbm_gbuf_t *gb, const char *name) {
+    if (!name || !name[0]) {
+        return NULL;
+    }
+    const cbm_gbuf_node_t **nodes = NULL;
+    int count = 0;
+    if (cbm_gbuf_find_by_name(gb, name, &nodes, &count) != 0 || count == 0) {
+        return NULL;
+    }
+    const cbm_gbuf_node_t *best = NULL;
+    for (int i = 0; i < count; i++) {
+        if (nodes[i]->label && strcmp(nodes[i]->label, "Class") == 0) {
+            return nodes[i];
+        }
+        if (!best) {
+            best = nodes[i];
+        }
+    }
+    return best;
+}
+
+/* Resolve a lazy-import module path to a graph node, with a fallback
+ * for relative dotted-stem modules the standard resolver misses. The
+ * standard resolver strips the trailing extension of the last path
+ * segment, so `import("./orders.component")` resolves to "...orders"
+ * while the target file `orders.component.ts` has module stem
+ * "orders.component". We retry keeping the last segment intact and
+ * appending common TS/JS extensions so the dotted stem survives. */
+static const cbm_gbuf_node_t *resolve_lazy_target(cbm_pipeline_ctx_t *ctx, const char *rel,
+                                                  const char *file_qn, const char *module_path,
+                                                  CBMHashTable *namespace_map) {
+    if (!ctx || !module_path || !module_path[0]) {
+        return NULL;
+    }
+    CBMImport imp = {.local_name = NULL, .module_path = module_path};
+    const cbm_gbuf_node_t *t =
+        cbm_pipeline_resolve_import_node(ctx, rel, file_qn, &imp, namespace_map);
+    if (t) {
+        return t;
+    }
+    if (module_path[0] != '.') {
+        return NULL;
+    }
+    char dir[CBM_SZ_1K];
+    snprintf(dir, sizeof(dir), "%s", rel ? rel : "");
+    char *ls = strrchr(dir, '/');
+    if (ls) {
+        *ls = '\0';
+    } else {
+        dir[0] = '\0';
+    }
+    char cand[CBM_SZ_1K];
+    snprintf(cand, sizeof(cand), "%s", dir);
+    const char *p = module_path;
+    bool ok = true;
+    while (*p) {
+        while (*p == '/') {
+            p++;
+        }
+        if (!*p) {
+            break;
+        }
+        const char *seg = p;
+        while (*p && *p != '/') {
+            p++;
+        }
+        size_t slen = (size_t)(p - seg);
+        if (slen == 1 && seg[0] == '.') {
+            continue;
+        }
+        if (slen == 2 && seg[0] == '.' && seg[1] == '.') {
+            char *pop = strrchr(cand, '/');
+            if (pop) {
+                *pop = '\0';
+            } else {
+                cand[0] = '\0';
+            }
+            continue;
+        }
+        size_t clen = strlen(cand);
+        if (clen + slen + 2 >= sizeof(cand)) {
+            ok = false;
+            break;
+        }
+        if (cand[0] && cand[clen - 1] != '/') {
+            cand[clen++] = '/';
+        }
+        memcpy(cand + clen, seg, slen);
+        clen += slen;
+        cand[clen] = '\0';
+    }
+    if (!ok) {
+        return NULL;
+    }
+    static const char *const exts[] = {"", ".ts", ".tsx", ".js", ".mjs", ".jsx"};
+    for (size_t i = 0; i < sizeof(exts) / sizeof(exts[0]); i++) {
+        char path[CBM_SZ_1K];
+        snprintf(path, sizeof(path), "%s%s", cand, exts[i]);
+        char *qn = cbm_pipeline_fqn_module(ctx->project_name, path);
+        if (qn) {
+            const cbm_gbuf_node_t *n = cbm_gbuf_find_by_qn(ctx->gbuf, qn);
+            free(qn);
+            if (n) {
+                return n;
+            }
+        }
+    }
+    return NULL;
+}
+
+void cbm_pipeline_emit_nav_routes_for_file(cbm_pipeline_ctx_t *ctx, const CBMFileResult *result,
+                                           const char *rel, CBMHashTable *namespace_map) {
+    if (!ctx || !ctx->gbuf || !result || !rel) {
+        return;
+    }
+    cbm_gbuf_t *gb = ctx->gbuf;
+
+    char *file_qn = cbm_pipeline_fqn_compute(ctx->project_name, rel, "__file__");
+    const cbm_gbuf_node_t *file_node = file_qn ? cbm_gbuf_find_by_qn(gb, file_qn) : NULL;
+    /* file_qn is reused as the source_file_qn argument to the import
+     * resolver below; keep it alive until after the lazy-load resolution. */
+
+    for (int i = 0; i < result->nav_routes.count; i++) {
+        const CBMNavRoute *nr = &result->nav_routes.items[i];
+        if (!nr->path) {
+            continue;
+        }
+
+        char qn[CBM_ROUTE_QN_SIZE];
+        nav_route_qn(nr->path, qn, sizeof(qn));
+        const char *display = (nr->path[0] == '\0') ? "/" : nr->path;
+
+        char esc_path[CBM_SZ_512];
+        char esc_comp[CBM_SZ_256];
+        char esc_redir[CBM_SZ_512];
+        char esc_lc[CBM_SZ_512];
+        char esc_lcm[CBM_SZ_512];
+        char esc_const[CBM_SZ_256];
+        cbm_json_escape(esc_path, sizeof(esc_path), nr->path);
+        cbm_json_escape(esc_comp, sizeof(esc_comp), nr->component ? nr->component : "");
+        cbm_json_escape(esc_redir, sizeof(esc_redir), nr->redirect_to ? nr->redirect_to : "");
+        cbm_json_escape(esc_lc, sizeof(esc_lc),
+                        nr->load_children_module ? nr->load_children_module : "");
+        cbm_json_escape(esc_lcm, sizeof(esc_lcm),
+                        nr->load_component_module ? nr->load_component_module : "");
+        cbm_json_escape(esc_const, sizeof(esc_const), nr->const_name ? nr->const_name : "");
+
+        char props[CBM_SZ_2K];
+        snprintf(props, sizeof(props),
+                 "{\"path\":\"%s\",\"component\":\"%s\",\"redirectTo\":\"%s\","
+                 "\"loadChildren\":\"%s\",\"loadComponent\":\"%s\","
+                 "\"declared_by\":\"%s\",\"line\":%u}",
+                 esc_path, esc_comp, esc_redir, esc_lc, esc_lcm, esc_const, nr->start_line);
+
+        int64_t route_id = cbm_gbuf_upsert_node(gb, "NavigationRoute", display, qn,
+                                                nr->file_path ? nr->file_path : rel,
+                                                (int)nr->start_line, 0, props);
+        if (route_id <= 0) {
+            continue;
+        }
+
+        /* Source for DECLARES_ROUTE: the const Variable that holds the
+         * Routes array (its QN is project-styled), falling back to the
+         * File node when the const is not in the graph (e.g. untyped
+         * arrays whose declarator name we still capture). */
+        const cbm_gbuf_node_t *src = NULL;
+        if (nr->const_name && nr->const_name[0]) {
+            char *const_qn = cbm_pipeline_fqn_compute(ctx->project_name, rel, nr->const_name);
+            if (const_qn) {
+                src = cbm_gbuf_find_by_qn(gb, const_qn);
+                free(const_qn);
+            }
+        }
+        if (!src) {
+            src = file_node;
+        }
+        if (src) {
+            cbm_gbuf_insert_edge(gb, src->id, route_id, "DECLARES_ROUTE",
+                                 "{\"via\":\"angular_router\"}");
+        }
+
+        /* ROUTES_TO: route → rendered component class. */
+        if (nr->component && nr->component[0]) {
+            const cbm_gbuf_node_t *comp = find_component_node(gb, nr->component);
+            if (comp) {
+                char eprops[CBM_SZ_256];
+                snprintf(eprops, sizeof(eprops), "{\"component\":\"%s\"}", esc_comp);
+                cbm_gbuf_insert_edge(gb, route_id, comp->id, "ROUTES_TO", eprops);
+            }
+        }
+
+        /* LAZY_LOADS: route → lazy-loaded module/file. loadChildren
+         * and loadComponent are both arrow-function `() => import("x")`
+         * at the AST level; we record which one via the edge property. */
+        const char *lazy =
+            nr->load_children_module ? nr->load_children_module : nr->load_component_module;
+        if (lazy && lazy[0] && file_qn) {
+            const cbm_gbuf_node_t *target =
+                resolve_lazy_target(ctx, rel, file_qn, lazy, namespace_map);
+            if (target) {
+                const char *kind = nr->load_children_module ? "loadChildren" : "loadComponent";
+                char eprops[CBM_SZ_256];
+                snprintf(eprops, sizeof(eprops), "{\"via\":\"%s\"}", kind);
+                cbm_gbuf_insert_edge(gb, route_id, target->id, "LAZY_LOADS", eprops);
+            }
+        }
+
+        /* REDIRECTS_TO: route → target navigation route (created if
+         * missing, so the redirect is always represented even when the
+         * target path is not declared in any Routes array). */
+        if (nr->redirect_to && nr->redirect_to[0]) {
+            char tqn[CBM_ROUTE_QN_SIZE];
+            nav_route_qn(nr->redirect_to, tqn, sizeof(tqn));
+            char tesc[CBM_SZ_512];
+            cbm_json_escape(tesc, sizeof(tesc), nr->redirect_to);
+            char tprops[CBM_SZ_512];
+            snprintf(tprops, sizeof(tprops), "{\"path\":\"%s\"}", tesc);
+            int64_t tid =
+                cbm_gbuf_upsert_node(gb, "NavigationRoute", nr->redirect_to, tqn, "", 0, 0, tprops);
+            if (tid > 0) {
+                cbm_gbuf_insert_edge(gb, route_id, tid, "REDIRECTS_TO",
+                                     "{\"via\":\"angular_router\"}");
+            }
+        }
+    }
+
+    free(file_qn);
+}
+
 void cbm_pipeline_create_route_nodes(cbm_gbuf_t *gb) {
     if (!gb) {
         return;

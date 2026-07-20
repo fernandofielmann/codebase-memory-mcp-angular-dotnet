@@ -660,6 +660,7 @@ int cbm_pipeline_pass_definitions(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t
             total_imports += create_import_edges_for_file(ctx, result, rel, NULL);
             create_channel_edges_for_file(ctx, result, rel);
             create_env_configures_for_file(ctx, result, rel);
+            cbm_pipeline_emit_nav_routes_for_file(ctx, result, rel, NULL);
             cbm_free_result(result);
         }
     }
@@ -693,6 +694,7 @@ int cbm_pipeline_pass_definitions(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t
                 create_import_edges_for_file(ctx, result, files[i].rel_path, namespace_map);
             create_channel_edges_for_file(ctx, result, files[i].rel_path);
             create_env_configures_for_file(ctx, result, files[i].rel_path);
+            cbm_pipeline_emit_nav_routes_for_file(ctx, result, files[i].rel_path, namespace_map);
         }
         cbm_pipeline_namespace_map_free(namespace_map);
         if (owns_local_cache) {
