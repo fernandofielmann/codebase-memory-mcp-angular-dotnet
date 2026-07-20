@@ -160,6 +160,12 @@ Removes all agent configs, skills, hooks, and instructions. Does not remove the 
   templates/styles, and resolvable standalone imports
 - **Frontend asset dependencies**: Programmatic Angular `HttpClient` and native `fetch` loads
   create `Asset` nodes and `LOADS_ASSET` edges without polluting backend routes
+- **Angular Router navigation**: Literal `Routes` arrays are extracted into
+  `NavigationRoute` nodes (canonical client paths, nested `children` flattened)
+  with `ROUTES_TO` (route→component), `REDIRECTS_TO`, `LAZY_LOADS`
+  (static `import()` for `loadChildren`/`loadComponent`), and `DECLARES_ROUTE`
+  (declaring const→route) edges. Navigation is kept out of HTTP matching,
+  `HTTP_CALLS`, `DATA_FLOWS`, and `cross_service`.
 - **Dead code detection**: Finds functions with zero callers, excluding entry points
 - **Cypher-like queries**: `MATCH (f:Function)-[:CALLS]->(g) WHERE f.name = 'main' RETURN g.name`
 
@@ -188,6 +194,8 @@ Removes all agent configs, skills, hooks, and instructions. Does not remove the 
 - `CALLS`, `IMPORTS`, `DEFINES`, `IMPLEMENTS`, `INHERITS`
 - `HTTP_CALLS`, `ASYNC_CALLS` (cross-service)
 - `LOADS_ASSET` (programmatic frontend dependencies)
+- `ROUTES_TO`, `REDIRECTS_TO`, `LAZY_LOADS`, `DECLARES_ROUTE` (Angular Router
+  navigation; `NavigationRoute` nodes, kept out of HTTP matching)
 - `EMITS`, `LISTENS_ON` (channels)
 - `DATA_FLOWS` with arg-to-param mapping + field access chains
 - `SIMILAR_TO` (MinHash + LSH near-clone detection, Jaccard scored)
@@ -454,7 +462,7 @@ codebase-memory-mcp cli --raw search_graph '{"project": "my-project", "label": "
 
 ### Node Labels
 
-`Project`, `Package`, `Folder`, `File`, `Module`, `Class`, `Function`, `Method`, `Interface`, `Enum`, `Type`, `Route`, `Asset`, `Resource`
+`Project`, `Package`, `Folder`, `File`, `Module`, `Class`, `Function`, `Method`, `Interface`, `Enum`, `Type`, `Route`, `Asset`, `Resource`, `NavigationRoute`
 
 Angular declarations remain `Class` nodes. Their queryable properties include `angular_kind`,
 `selector`, `standalone`, `templateUrl`, `styleUrls`, and `angular_imports`; resolved standalone
@@ -467,7 +475,7 @@ parameters and remove query strings and fragments; these loads do not create `Ro
 
 ### Edge Types
 
-`CONTAINS_PACKAGE`, `CONTAINS_FOLDER`, `CONTAINS_FILE`, `DEFINES`, `DEFINES_METHOD`, `IMPORTS`, `CALLS`, `HTTP_CALLS`, `ASYNC_CALLS`, `LOADS_ASSET`, `IMPLEMENTS`, `HANDLES`, `USAGE`, `CONFIGURES`, `WRITES`, `MEMBER_OF`, `TESTS`, `USES_TYPE`, `FILE_CHANGES_WITH`
+`CONTAINS_PACKAGE`, `CONTAINS_FOLDER`, `CONTAINS_FILE`, `DEFINES`, `DEFINES_METHOD`, `IMPORTS`, `CALLS`, `HTTP_CALLS`, `ASYNC_CALLS`, `LOADS_ASSET`, `IMPLEMENTS`, `HANDLES`, `USAGE`, `CONFIGURES`, `WRITES`, `MEMBER_OF`, `TESTS`, `USES_TYPE`, `FILE_CHANGES_WITH`, `ROUTES_TO`, `REDIRECTS_TO`, `LAZY_LOADS`, `DECLARES_ROUTE`
 
 ### Qualified Names
 

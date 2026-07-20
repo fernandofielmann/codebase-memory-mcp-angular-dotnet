@@ -853,7 +853,8 @@ static const char *ALL_EDGE_TYPES[] = {
     "GRAPHQL_CALLS", "GRPC_CALLS", "HANDLES",        "HTTP_CALLS",      "IMPLEMENTS",
     "IMPORTS",       "INHERITS",   "INFRA_MAPS",     "OVERRIDE",        "SEMANTICALLY_RELATED",
     "SIMILAR_TO",    "TESTS_FILE", "TESTS",          "TRPC_CALLS",      "USAGE",
-    "ASYNC_CALLS",   NULL};
+    "ASYNC_CALLS",   "ROUTES_TO",  "REDIRECTS_TO",   "LAZY_LOADS",      "DECLARES_ROUTE",
+    NULL};
 
 static void dump_edge_histogram(cbm_store_t *store, const char *project) {
     if (!store) {
