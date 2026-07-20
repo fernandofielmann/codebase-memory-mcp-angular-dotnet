@@ -22,6 +22,7 @@
  */
 #include "test_framework.h"
 #include <store/store.h>
+#include "test_helpers.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -635,6 +636,189 @@ TEST(arch_layers) {
 
     cbm_store_architecture_free(&info);
     cbm_store_close(s);
+    PASS();
+}
+
+/* Find a layer entry by package name; returns NULL if not present. */
+static const cbm_package_layer_t *find_layer(const cbm_architecture_info_t *info, const char *pkg) {
+    for (int i = 0; i < info->layer_count; i++) {
+        if (info->layers[i].name && strcmp(info->layers[i].name, pkg) == 0) {
+            return &info->layers[i];
+        }
+    }
+    return NULL;
+}
+
+/* PR C: evidence-based layer classification. Builds a synthetic monorepo
+ * (Angular frontend + ASP.NET Core API + .NET library + script tool) with
+ * marker files on disk and verifies that each package is classified with an
+ * explicit confidence and a human-readable evidence string, instead of a
+ * bare fan-in/fan-out label. */
+TEST(arch_layers_evidence) {
+    /* Temp project root so .csproj metadata can be read from disk. */
+    char *root = th_mktempdir("cbm_arch_ev");
+    ASSERT_NOT_NULL(root);
+
+    /* Write .csproj files to disk; arch_read_csproj opens root + '/' + rel. */
+    ASSERT_EQ(th_write_file(TH_PATH(root, "backend/api/Api.csproj"),
+                            "<Project Sdk=\"Microsoft.NET.Sdk.Web\">\n"
+                            "  <PropertyGroup>\n"
+                            "    <OutputType>Exe</OutputType>\n"
+                            "    <TargetFramework>net10.0</TargetFramework>\n"
+                            "  </PropertyGroup>\n</Project>"),
+              0);
+    ASSERT_EQ(th_write_file(TH_PATH(root, "shared/lib/Lib.csproj"),
+                            "<Project Sdk=\"Microsoft.NET.Sdk\">\n"
+                            "  <PropertyGroup>\n"
+                            "    <OutputType>Library</OutputType>\n"
+                            "    <TargetFramework>net10.0</TargetFramework>\n"
+                            "  </PropertyGroup>\n</Project>"),
+              0);
+
+    cbm_store_t *s = cbm_store_open_memory();
+    ASSERT_NOT_NULL(s);
+    ASSERT_EQ(cbm_store_upsert_project(s, "monorepo", root), CBM_STORE_OK);
+
+    /* Marker File nodes (package segment matches the functions below). */
+    cbm_node_t f_program = {.project = "monorepo",
+                            .label = "File",
+                            .name = "Program.cs",
+                            .qualified_name = "monorepo.backend.api.Program",
+                            .file_path = "backend/api/Program.cs"};
+    cbm_node_t f_apicsproj = {.project = "monorepo",
+                              .label = "File",
+                              .name = "Api.csproj",
+                              .qualified_name = "monorepo.backend.api.Api",
+                              .file_path = "backend/api/Api.csproj"};
+    cbm_node_t f_maints = {.project = "monorepo",
+                           .label = "File",
+                           .name = "main.ts",
+                           .qualified_name = "monorepo.frontend.app.main",
+                           .file_path = "frontend/src/main.ts"};
+    cbm_node_t f_angular = {.project = "monorepo",
+                            .label = "File",
+                            .name = "angular.json",
+                            .qualified_name = "monorepo.frontend.app.angular",
+                            .file_path = "frontend/angular.json"};
+    cbm_node_t f_pkg = {.project = "monorepo",
+                        .label = "File",
+                        .name = "package.json",
+                        .qualified_name = "monorepo.frontend.app.pkg",
+                        .file_path = "frontend/package.json"};
+    cbm_node_t f_libcsproj = {.project = "monorepo",
+                              .label = "File",
+                              .name = "Lib.csproj",
+                              .qualified_name = "monorepo.shared.lib.Lib",
+                              .file_path = "shared/lib/Lib.csproj"};
+    cbm_store_upsert_node(s, &f_program);
+    cbm_store_upsert_node(s, &f_apicsproj);
+    cbm_store_upsert_node(s, &f_maints);
+    cbm_store_upsert_node(s, &f_angular);
+    cbm_store_upsert_node(s, &f_pkg);
+    cbm_store_upsert_node(s, &f_libcsproj);
+
+    /* Function nodes with 4-segment QNs (package = segment[2]). */
+    cbm_node_t fn_main = {.project = "monorepo",
+                          .label = "Function",
+                          .name = "Main",
+                          .qualified_name = "monorepo.backend.api.Program.Main",
+                          .file_path = "backend/api/Program.cs",
+                          .properties_json = "{\"is_entry_point\":true}"};
+    int64_t id_main = cbm_store_upsert_node(s, &fn_main);
+
+    cbm_node_t fn_ctrl = {.project = "monorepo",
+                          .label = "Function",
+                          .name = "Get",
+                          .qualified_name = "monorepo.backend.api.OrdersController.Get",
+                          .file_path = "backend/api/Controllers/OrdersController.cs"};
+    int64_t id_ctrl = cbm_store_upsert_node(s, &fn_ctrl);
+
+    cbm_node_t fn_bootstrap = {.project = "monorepo",
+                               .label = "Function",
+                               .name = "bootstrap",
+                               .qualified_name = "monorepo.frontend.app.bootstrap",
+                               .file_path = "frontend/src/main.ts",
+                               .properties_json = "{\"is_entry_point\":true}"};
+    int64_t id_bootstrap = cbm_store_upsert_node(s, &fn_bootstrap);
+
+    cbm_node_t fn_helper = {.project = "monorepo",
+                            .label = "Function",
+                            .name = "format",
+                            .qualified_name = "monorepo.shared.lib.Helpers.format",
+                            .file_path = "shared/lib/Helpers.cs"};
+    int64_t id_helper = cbm_store_upsert_node(s, &fn_helper);
+
+    cbm_node_t fn_run = {.project = "monorepo",
+                         .label = "Function",
+                         .name = "run",
+                         .qualified_name = "monorepo.scripts.tools.run",
+                         .file_path = "scripts/run.ts"};
+    int64_t id_run = cbm_store_upsert_node(s, &fn_run);
+
+    /* Route in the api package. */
+    cbm_node_t route = {.project = "monorepo",
+                        .label = "Route",
+                        .name = "/api/orders",
+                        .qualified_name = "monorepo.backend.api.route./api/orders",
+                        .properties_json = "{\"method\":\"GET\",\"path\":\"/api/orders\","
+                                           "\"handler\":\"Get\"}"};
+    cbm_store_upsert_node(s, &route);
+
+    /* CALLS edges to populate cross-package boundaries. */
+    cbm_edge_t e1 = {
+        .project = "monorepo", .source_id = id_bootstrap, .target_id = id_ctrl, .type = "CALLS"};
+    cbm_edge_t e2 = {
+        .project = "monorepo", .source_id = id_ctrl, .target_id = id_helper, .type = "CALLS"};
+    cbm_edge_t e3 = {
+        .project = "monorepo", .source_id = id_run, .target_id = id_helper, .type = "CALLS"};
+    cbm_edge_t e4 = {
+        .project = "monorepo", .source_id = id_main, .target_id = id_ctrl, .type = "CALLS"};
+    cbm_store_insert_edge(s, &e1);
+    cbm_store_insert_edge(s, &e2);
+    cbm_store_insert_edge(s, &e3);
+    cbm_store_insert_edge(s, &e4);
+
+    cbm_architecture_info_t info;
+    memset(&info, 0, sizeof(info));
+    const char *aspects[] = {"layers"};
+    ASSERT_EQ(cbm_store_get_architecture(s, "monorepo", NULL, aspects, 1, &info), CBM_STORE_OK);
+    ASSERT_TRUE(info.layer_count >= 4);
+
+    /* api: entry marker (Program.cs) + routes → "api", high confidence. */
+    const cbm_package_layer_t *api = find_layer(&info, "api");
+    ASSERT_NOT_NULL(api);
+    ASSERT_STR_EQ(api->layer, "api");
+    ASSERT_STR_EQ(api->confidence, "high");
+    ASSERT_NOT_NULL(api->evidence);
+    ASSERT_TRUE(strstr(api->evidence, "Program.cs") != NULL);
+
+    /* app: entry marker (main.ts), no routes → "entry", high confidence. */
+    const cbm_package_layer_t *app = find_layer(&info, "app");
+    ASSERT_NOT_NULL(app);
+    ASSERT_STR_EQ(app->layer, "entry");
+    ASSERT_STR_EQ(app->confidence, "high");
+    ASSERT_NOT_NULL(app->evidence);
+    ASSERT_TRUE(strstr(app->evidence, "main.ts") != NULL);
+
+    /* lib: .csproj OutputType=Library, no entry/routes → "core", medium. */
+    const cbm_package_layer_t *lib = find_layer(&info, "lib");
+    ASSERT_NOT_NULL(lib);
+    ASSERT_STR_EQ(lib->layer, "core");
+    ASSERT_STR_EQ(lib->confidence, "medium");
+    ASSERT_NOT_NULL(lib->evidence);
+    ASSERT_TRUE(strstr(lib->evidence, "Lib.csproj") != NULL);
+    ASSERT_TRUE(strstr(lib->evidence, "net10.0") != NULL);
+
+    /* tools: no project markers → low-confidence fallback. */
+    const cbm_package_layer_t *tools = find_layer(&info, "tools");
+    ASSERT_NOT_NULL(tools);
+    ASSERT_STR_EQ(tools->confidence, "low");
+    ASSERT_NOT_NULL(tools->evidence);
+    ASSERT_TRUE(strstr(tools->evidence, "no project markers") != NULL);
+
+    cbm_store_architecture_free(&info);
+    cbm_store_close(s);
+    th_rmtree(root);
     PASS();
 }
 
@@ -1503,6 +1687,7 @@ SUITE(store_arch) {
     RUN_TEST(arch_boundaries);
     RUN_TEST(arch_boundaries_no_quadratic_scan);
     RUN_TEST(arch_layers);
+    RUN_TEST(arch_layers_evidence);
     RUN_TEST(arch_file_tree);
     RUN_TEST(arch_clusters);
 
