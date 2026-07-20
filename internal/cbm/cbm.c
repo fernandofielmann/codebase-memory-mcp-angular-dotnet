@@ -188,6 +188,11 @@ void cbm_channels_push(CBMChannelArray *arr, CBMArena *a, CBMChannel ch) {
     arr->items[arr->count++] = ch;
 }
 
+void cbm_nav_routes_push(CBMNavRouteArray *arr, CBMArena *a, CBMNavRoute nr) {
+    GROW_ARRAY(arr, a);
+    arr->items[arr->count++] = nr;
+}
+
 // --- String input reader (for parse_with_options) ---
 
 typedef struct {
@@ -988,6 +993,10 @@ static CBMFileResult *cbm_extract_file_impl(const char *source, int source_len,
 
     // Channel detection (Socket.IO / EventEmitter) — JS/TS only.
     cbm_extract_channels(&ctx);
+
+    // Angular Router routes (Routes arrays) — TS/TSX only. Kept separate from
+    // HTTP Route nodes and the HTTP/cross_service matching machinery.
+    cbm_extract_angular_routes(&ctx);
 
     // K8s / Kustomize semantic pass (additional structured extraction for YAML-based infra files).
     if (ctx.language == CBM_LANG_KUSTOMIZE || ctx.language == CBM_LANG_K8S) {

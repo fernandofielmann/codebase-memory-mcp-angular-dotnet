@@ -529,6 +529,14 @@ int cbm_parallel_resolve(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *files, 
  * Re-targets these edges to Route nodes for cross-service traversal. */
 void cbm_pipeline_create_route_nodes(cbm_gbuf_t *gb);
 
+/* Emit NavigationRoute nodes + ROUTES_TO / REDIRECTS_TO / LAZY_LOADS /
+ * DECLARES_ROUTE edges for one file's Angular Router route entries. Called
+ * from the definitions pass (sequential) and the parallel build pass —
+ * keep both call sites in sync. Navigation routes stay out of the HTTP
+ * Route namespace and the cross_service matching machinery. */
+void cbm_pipeline_emit_nav_routes_for_file(cbm_pipeline_ctx_t *ctx, const CBMFileResult *result,
+                                           const char *rel, CBMHashTable *namespace_map);
+
 /* ── Pass function prototypes ────────────────────────────────────── */
 
 int cbm_pipeline_pass_definitions(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *files,

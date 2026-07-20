@@ -431,6 +431,38 @@ typedef struct {
     int cap;
 } CBMChannelArray;
 
+/* Angular Router navigation route. One record per entry in a `Routes` array
+ * (path + component/loadChildren/loadComponent/redirectTo). Captured during
+ * TS/TSX extraction and materialized later as a `NavigationRoute` node plus
+ * `ROUTES_TO` / `REDIRECTS_TO` / `LAZY_LOADS` edges in the definitions pass,
+ * after all def nodes exist so cross-file targets resolve. Navigation routes
+ * are deliberately kept out of the HTTP `Route` namespace and the HTTP
+ * matching/cross_service machinery. */
+typedef struct {
+    // canonical route path (e.g. "orders/:id"), "" for root, or NULL
+    const char *path;
+    // `component: X` identifier or NULL
+    const char *component;
+    // `loadChildren: () => import("./m")` target path or NULL
+    const char *load_children_module;
+    // `loadComponent: () => import("./m")` target path or NULL
+    const char *load_component_module;
+    // `redirectTo: "/p"` literal path or NULL
+    const char *redirect_to;
+    // name of the const holding the Routes array (declared_by)
+    const char *const_name;
+    // rel path of the declaring file
+    const char *file_path;
+    // 1-based line of the route entry
+    uint32_t start_line;
+} CBMNavRoute;
+
+typedef struct {
+    CBMNavRoute *items;
+    int count;
+    int cap;
+} CBMNavRouteArray;
+
 // Full extraction result for one file.
 typedef struct {
     CBMArena arena; // owns all string memory
@@ -449,6 +481,7 @@ typedef struct {
     CBMStringRefArray string_refs;       // URL/config string literals from AST
     CBMInfraBindingArray infra_bindings; // topic→URL pairs from IaC configs
     CBMChannelArray channels;            // Socket.IO / EventEmitter pub/sub participation
+    CBMNavRouteArray nav_routes;
 
     const char *module_qn;      // module qualified name
     const char *namespace_name; // declared namespace/package (Java/Kotlin/C#/PHP), NULL if none
@@ -627,6 +660,7 @@ void cbm_infrabinding_push(CBMInfraBindingArray *arr, CBMArena *a, CBMInfraBindi
 void cbm_impltrait_push(CBMImplTraitArray *arr, CBMArena *a, CBMImplTrait it);
 void cbm_resolvedcall_push(CBMResolvedCallArray *arr, CBMArena *a, CBMResolvedCall rc);
 void cbm_channels_push(CBMChannelArray *arr, CBMArena *a, CBMChannel ch);
+void cbm_nav_routes_push(CBMNavRouteArray *arr, CBMArena *a, CBMNavRoute nr);
 
 // --- Sub-extractor entry points ---
 
@@ -638,6 +672,7 @@ void cbm_extract_type_refs(CBMExtractCtx *ctx);
 void cbm_extract_env_accesses(CBMExtractCtx *ctx);
 void cbm_extract_type_assigns(CBMExtractCtx *ctx);
 void cbm_extract_channels(CBMExtractCtx *ctx);
+void cbm_extract_angular_routes(CBMExtractCtx *ctx);
 
 // Single-pass unified extraction (replaces the 7 calls above except defs+imports).
 void cbm_extract_unified(CBMExtractCtx *ctx);
