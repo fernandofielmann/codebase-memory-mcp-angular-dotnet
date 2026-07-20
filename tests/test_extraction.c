@@ -692,6 +692,69 @@ TEST(csharp_aspnet_attribute_routes) {
     PASS();
 }
 
+/* C# generic invocations preserve type arguments in CBMCall and produce a
+ * clean callee name (no `<...>`), without dropping bare generic calls. */
+TEST(csharp_generic_invocations) {
+    CBMFileResult *r = extract("using Microsoft.Extensions.DependencyInjection;\n"
+                               "class C { void M(IServiceCollection s) {\n"
+                               "  s.AddScoped<IOrderService, OrderService>();\n"
+                               "  s.AddSingleton<ICache, MemCache>();\n"
+                               "  var x = DoThing<int, string>(1);\n"
+                               "  s.AddTransient<IFoo, Foo>();\n"
+                               "  s.AddNonGeneric();\n"
+                               "} }\n",
+                               CBM_LANG_CSHARP, "t", "Di.cs");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+
+    /* Helper: find a call by bare callee suffix and return it. */
+    const CBMCall *find = (const CBMCall *)0;
+    for (int i = 0; i < r->calls.count; i++) {
+        if (r->calls.items[i].callee_name && strstr(r->calls.items[i].callee_name, "AddScoped"))
+            find = &r->calls.items[i];
+    }
+
+    /* Member generic call: callee is clean ("...AddScoped"), no `<...>`. */
+    ASSERT_NOT_NULL(find);
+    ASSERT_TRUE(strstr(find->callee_name, "AddScoped") != NULL);
+    ASSERT_TRUE(strstr(find->callee_name, "<") == NULL);
+    ASSERT_EQ(find->generic_arg_count, 2);
+    ASSERT_STR_EQ(find->generic_args, "IOrderService,OrderService");
+
+    /* Bare generic call DoThing<int,string>() is no longer dropped. */
+    int found_dothing = 0, found_nonGeneric = 0;
+    for (int i = 0; i < r->calls.count; i++) {
+        const CBMCall *c = &r->calls.items[i];
+        if (c->callee_name && strcmp(c->callee_name, "DoThing") == 0) {
+            found_dothing = 1;
+            ASSERT_EQ(c->generic_arg_count, 2);
+            ASSERT_STR_EQ(c->generic_args, "int,string");
+        }
+        if (c->callee_name && strstr(c->callee_name, "AddNonGeneric")) {
+            found_nonGeneric = 1;
+            ASSERT_EQ(c->generic_arg_count, 0);
+            ASSERT(c->generic_args == NULL);
+        }
+    }
+    ASSERT_TRUE(found_dothing);
+    ASSERT_TRUE(found_nonGeneric);
+
+    /* All four generic DI registrations carry their two type args. */
+    int di_count = 0;
+    for (int i = 0; i < r->calls.count; i++) {
+        const CBMCall *c = &r->calls.items[i];
+        if (c->callee_name && c->generic_arg_count == 2 &&
+            (strstr(c->callee_name, "AddScoped") || strstr(c->callee_name, "AddSingleton") ||
+             strstr(c->callee_name, "AddTransient"))) {
+            di_count++;
+        }
+    }
+    ASSERT_EQ(di_count, 3);
+
+    cbm_free_result(r);
+    PASS();
+}
+
 /* --- Swift --- */
 TEST(swift_class) {
     CBMFileResult *r = extract("class Vehicle {\n    var speed: Int = 0\n    func accelerate() { "
@@ -3904,6 +3967,7 @@ SUITE(extraction) {
     RUN_TEST(csharp_class);
     RUN_TEST(csharp_interface);
     RUN_TEST(csharp_aspnet_attribute_routes);
+    RUN_TEST(csharp_generic_invocations);
     RUN_TEST(swift_class);
     RUN_TEST(kotlin_function);
     RUN_TEST(kotlin_class);

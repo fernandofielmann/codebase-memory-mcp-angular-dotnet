@@ -251,6 +251,10 @@ typedef struct {
     bool is_method;                     // method/member call with a non-self receiver. Perl:
                                         // arrow/method call ($obj->m). TS/JS/TSX: member call
                                         // x.foo() whose receiver is not this/super. Default false.
+    const char *generic_args;           // comma-joined generic type arguments
+                                        // ("IOrderService,OrderService"), arena-allocated, or
+                                        // NULL when the call has no generic_name (PR 11).
+    int generic_arg_count;              // number of generic type arguments (0 if none)
 } CBMCall;
 
 typedef struct {
