@@ -29,16 +29,17 @@ Repositorio:
   código minificado en todos los modos.
 - [x] Implementada, validada y fusionada la PR prioritaria B para completar
   rutas, entry points y handlers en `get_architecture`.
-- [x] Implementada y validada localmente la PR prioritaria C para clasificar
+- [x] Implementada, validada y fusionada la PR prioritaria C para clasificar
   capas con evidencia y `confidence`.
-- [ ] Resolver primero la calidad y completitud de `get_architecture`.
+- [x] Resuelta la calidad y completitud de `get_architecture` (PRs A, B y C).
 - [ ] Continuar después el roadmap en PRs pequeñas y verificables.
 
 El fork tiene habilitados los issues y no ejecuta checks automáticos en las PRs.
 Las PR 1, PR 2, PR 3, PR 4 y PR 5 están fusionadas en `main`.
 La PR prioritaria A está fusionada en `main` como PR 6.
 La PR prioritaria B está fusionada en `main` como PR 8.
-La PR prioritaria C está en la rama `feat/architecture-evidence-layers`.
+La PR prioritaria C está fusionada en `main` como PR 23 (squash, commit `0f1f3d1`).
+El bloque de calidad de `get_architecture` (A + B + C) queda cerrado.
 
 ## Prioridad inmediata: calidad de `get_architecture`
 
@@ -146,8 +147,9 @@ Validación privada `ppi-ntv`:
 - [x] Comprobar que `get_architecture` pueda justificar la arquitectura sin
   requerir una lectura manual posterior de los archivos de arranque y proyecto.
 
-Rama: `feat/architecture-evidence-layers`
+Rama: `feat/architecture-evidence-layers` (eliminada tras el merge)
 PR: https://github.com/fernandofielmann/codebase-memory-mcp-angular-dotnet/pull/23
+Merge: squash en `main` el 20 de julio de 2026, commit `0f1f3d1`
 
 Implementado:
 
@@ -169,6 +171,7 @@ Validación local:
 - Suite dirigida `store_arch`: 55 pruebas pasaron (incluye `arch_layers_evidence`).
 - Suite dirigida `mcp`: 146 pruebas pasaron.
 - `make -j3 -f Makefile.cbm lint-ci` (clang-format + cppcheck + NOLINT): correcto.
+- `scripts/test.sh`: todas las pruebas pasaron.
 - `api` con `Program.cs` + rutas → `api`, `confidence: high`, evidencia cita
   `Program.cs`.
 - `app` con `main.ts` y sin rutas → `entry`, `confidence: high`, evidencia cita
@@ -178,12 +181,26 @@ Validación local:
 - `tools` sin marcadores → fallback de `confidence: low` con evidencia
   «no project markers».
 
+Validación privada `ppi-ntv` (binario nuevo instalado el 20 de julio de 2026):
+
+- Índice `full`: 13.233 nodos y 35.212 aristas.
+- `get_architecture` devuelve 9 capas con `confidence` y `evidence`:
+  `ntv-frontend` y `ntv-testhost` → `entry`/high («entry marker: main.ts»);
+  paquete de rutas → `api`/high; `ntv-backend`, `ntv-hangfire` y
+  `unfinished-customer-interactions` → `internal`/medium (evidencia cita
+  `Program.cs` y la raíz del proyecto); 3 paquetes sin marcadores →
+  `confidence: low`. Desglose 3 high / 3 medium / 3 low.
+- Línea base conservada: 73 rutas (`truncated: false`), 7 entry points,
+  `DATA_FLOWS` = 20, `HTTP_CALLS` = 21, `HANDLES` = 46, `LOADS_ASSET` = 3.
+- El resumen se justifica solo, sin contraste manual con `main.ts`/`Program.cs`/
+  `.csproj`.
+
 ### Orden obligatorio
 
-1. PR prioritaria A: ruido de minificados.
-2. PR prioritaria B: completitud de rutas y handlers.
-3. PR prioritaria C: clasificación de capas basada en evidencia.
-4. Retomar PR 6 y PR 11 y continuar el roadmap existente.
+1. PR prioritaria A: ruido de minificados. ✅ fusionada (PR 6).
+2. PR prioritaria B: completitud de rutas y handlers. ✅ fusionada (PR 8).
+3. PR prioritaria C: clasificación de capas basada en evidencia. ✅ fusionada (PR 23).
+4. Retomar PR 6 y PR 11 y continuar el roadmap existente. ← siguiente.
 
 ## Trabajo completado
 
