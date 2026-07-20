@@ -32,6 +32,9 @@ Repositorio:
 - [x] Implementada, validada y fusionada la PR prioritaria C para clasificar
   capas con evidencia y `confidence`.
 - [x] Resuelta la calidad y completitud de `get_architecture` (PRs A, B y C).
+- [x] Implementada, validada y fusionada la PR 6 para Angular Router y lazy
+  loading (nodos `NavigationRoute` + aristas `ROUTES_TO`/`REDIRECTS_TO`/
+  `LAZY_LOADS`/`DECLARES_ROUTE`).
 - [ ] Continuar después el roadmap en PRs pequeñas y verificables.
 
 El fork tiene habilitados los issues y no ejecuta checks automáticos en las PRs.
@@ -39,6 +42,7 @@ Las PR 1, PR 2, PR 3, PR 4 y PR 5 están fusionadas en `main`.
 La PR prioritaria A está fusionada en `main` como PR 6.
 La PR prioritaria B está fusionada en `main` como PR 8.
 La PR prioritaria C está fusionada en `main` como PR 23 (squash, commit `0f1f3d1`).
+La PR 6 (Angular Router) está fusionada en `main` como PR 25 (merge commit `ce1bd12`).
 El bloque de calidad de `get_architecture` (A + B + C) queda cerrado.
 
 ## Prioridad inmediata: calidad de `get_architecture`
@@ -200,7 +204,8 @@ Validación privada `ppi-ntv` (binario nuevo instalado el 20 de julio de 2026):
 1. PR prioritaria A: ruido de minificados. ✅ fusionada (PR 6).
 2. PR prioritaria B: completitud de rutas y handlers. ✅ fusionada (PR 8).
 3. PR prioritaria C: clasificación de capas basada en evidencia. ✅ fusionada (PR 23).
-4. Retomar PR 6 y PR 11 y continuar el roadmap existente. ← siguiente.
+4. PR 6 (Angular Router y lazy loading). ✅ fusionada (PR 25).
+5. Retomar PR 11 y continuar el roadmap existente (PR 7/PR 8 dependen de PR 6). ← siguiente.
 
 ## Trabajo completado
 
@@ -373,21 +378,46 @@ Validación:
 
 #### PR 6: Angular Router y lazy loading
 
-- [ ] Extraer arrays `Routes`, `provideRouter` y
-  `RouterModule.forRoot`/`forChild`.
-- [ ] Crear nodos `NavigationRoute` con path canónico.
-- [ ] Emitir `ROUTES_TO`, `REDIRECTS_TO` y `LAZY_LOADS` hacia componentes o
-  módulos.
-- [ ] Resolver `loadComponent` y `loadChildren` solo cuando `import()` sea
-  estático.
-- [ ] Mantener la navegación fuera del matching HTTP.
+PR: https://github.com/fernandofielmann/codebase-memory-mcp-angular-dotnet/pull/25  
+Rama: `feat/angular-router` (eliminada tras el merge)  
+Merge: commit `ce1bd12` en `main` el 20 de julio de 2026 (feature commit `514003d`)
+
+- [x] Extraer arrays `Routes` (y recursar `children`); `provideRouter` y
+  `RouterModule.forRoot`/`forChild` quedan fuera de este alcance.
+- [x] Crear nodos `NavigationRoute` con path canónico (QN `__navroute__/<path>`).
+- [x] Emitir `ROUTES_TO`, `REDIRECTS_TO`, `LAZY_LOADS` y `DECLARES_ROUTE` hacia
+  componentes, módulos o rutas destino.
+- [x] Resolver `loadComponent` y `loadChildren` solo cuando `import()` sea
+  estático, con fallback para imports relativos de dotted-stem
+  (`./branch-zone/branch-zone.routes`) que el resolver estándar mal-stripa.
+- [x] Mantener la navegación fuera del matching HTTP y de `cross_service`.
 
 Zonas principales:
 
-- `internal/cbm/extract_defs.c` o un nuevo extractor Angular dedicado
-- `src/pipeline/pass_definitions.c`
-- `src/pipeline/pass_route_nodes.c`
-- `tests/test_edge_types_probe.c`
+- `internal/cbm/extract_angular_routes.c` (nuevo extractor)
+- `src/pipeline/pass_route_nodes.c` (emisión de nodos y aristas)
+- `src/pipeline/pass_definitions.c` y `src/pipeline/pass_parallel.c` (paridad)
+- `tests/test_extraction.c` y `tests/test_parallel.c`
+
+Validación:
+
+- Test de extractor `extract_angular_routes_array` (rutas raíz/parámetro,
+  `loadComponent`, `loadChildren`, `redirectTo`, `children` anidados).
+- Test de paridad secuencial/paralela `parallel_angular_nav_routes_parity`
+  (cuenta de nodos `NavigationRoute` y los 4 tipos de arista coincidentes).
+- `scripts/lint.sh --ci` (clang-format + cppcheck): correcto.
+- `scripts/test.sh`: 6.011 pruebas pasaron, 1 omitida.
+- Índice privado `ppi-ntv` reconstruido desde cero: 13.238 nodos y 35.227 aristas;
+  5 nodos `NavigationRoute` (`/`, `branch-zone`, `bouncer`, `edit-page`, `edit`),
+  2 `ROUTES_TO`, 3 `REDIRECTS_TO`, 1 `LAZY_LOADS` (`branch-zone` →
+  `branch-zone.routes.ts` vía fallback dotted-stem), 9 `DECLARES_ROUTE`.
+  Reconciliación línea por línea con `app.routes.ts` y `branch-zone.routes.ts`:
+  sin nodos ni aristas faltantes o sobrantes; el dedup es consistente
+  (`DECLARES_ROUTE` no se deduplica entre archivos porque cada `const routes` es
+  un nodo `Variable` distinto; `ROUTES_TO`/`REDIRECTS_TO` sí se deduplican por
+  nodo `NavigationRoute` compartido).
+- Línea base conservada: navegación cliente no contamina `HTTP_CALLS`,
+  `DATA_FLOWS` ni `cross_service`.
 
 #### PR 7: guards Angular
 
@@ -508,10 +538,11 @@ Zonas principales:
 
 ## Dependencias y orden recomendado
 
-1. PR 5 completada; continuar con PR 6 y PR 11 como siguientes bases
-   independientes.
-2. Angular: PR 6 → PR 7 y PR 8 → PR 9 → PR 10; las dependencias sobre PR 5 ya
-   están satisfechas.
+1. PR 5 completada; PR 6 (Angular Router) completada. Continuar con PR 11 como
+   siguiente base independiente, y PR 7/PR 8 que ya tienen satisfecha la
+   dependencia sobre PR 6.
+2. Angular: PR 6 ✅ → PR 7 y PR 8 → PR 9 → PR 10; las dependencias sobre PR 5
+   ya están satisfechas.
 3. .NET: PR 11 → PR 12 → PR 13.
 4. PR 14 comienza cuando PR 11 y el matching HTTP sigan estables.
 5. PR 15 cierra el roadmap después de PR 9, PR 12 y PR 14.
