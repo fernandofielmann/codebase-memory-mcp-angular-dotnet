@@ -147,6 +147,7 @@ Validación privada `ppi-ntv`:
   requerir una lectura manual posterior de los archivos de arranque y proyecto.
 
 Rama: `feat/architecture-evidence-layers`
+PR: https://github.com/fernandofielmann/codebase-memory-mcp-angular-dotnet/pull/23
 
 Implementado:
 
