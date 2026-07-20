@@ -34,7 +34,10 @@ Repositorio:
 - [x] Resuelta la calidad y completitud de `get_architecture` (PRs A, B y C).
 - [x] Implementada, validada y fusionada la PR 6 para Angular Router y lazy
   loading (nodos `NavigationRoute` + aristas `ROUTES_TO`/`REDIRECTS_TO`/
-  `LAZY_LOADS`/`DECLARES_ROUTE`).
+  `LAZY_LOADS`/`DECLARES_ROUTE`); registro de los tipos nuevos en esquema,
+  CLI y README completado en el follow-up PR 27.
+- [x] Cerrados los issues asociados a PRs ya fusionados: #11 (PR 6),
+  #9/#10/#7 (PRs A/B/C).
 - [ ] Continuar después el roadmap en PRs pequeñas y verificables.
 
 El fork tiene habilitados los issues y no ejecuta checks automáticos en las PRs.
@@ -42,7 +45,9 @@ Las PR 1, PR 2, PR 3, PR 4 y PR 5 están fusionadas en `main`.
 La PR prioritaria A está fusionada en `main` como PR 6.
 La PR prioritaria B está fusionada en `main` como PR 8.
 La PR prioritaria C está fusionada en `main` como PR 23 (squash, commit `0f1f3d1`).
-La PR 6 (Angular Router) está fusionada en `main` como PR 25 (merge commit `ce1bd12`).
+La PR 6 (Angular Router) está fusionada en `main` como PR 25 (merge commit `ce1bd12`);
+su follow-up de registro de esquema/CLI/README como PR 27 (merge commit `fbf6ab4`).
+Issues cerrados: #7, #9, #10 y #11.
 El bloque de calidad de `get_architecture` (A + B + C) queda cerrado.
 
 ## Prioridad inmediata: calidad de `get_architecture`
@@ -418,6 +423,17 @@ Validación:
   nodo `NavigationRoute` compartido).
 - Línea base conservada: navegación cliente no contamina `HTTP_CALLS`,
   `DATA_FLOWS` ni `cross_service`.
+
+Follow-up PR 27 (merge commit `fbf6ab4`): registro de los tipos nuevos en
+`README.md` (feature blurb, `Edge types (selected)`, `Node Labels` y lista
+completa de `Edge Types`), en la ayuda del CLI (`src/cli/cli.c`) y en el
+histograma de contratos (`ALL_EDGE_TYPES` en `tests/test_lang_contract.c`).
+Esto completa el criterio de aceptación del issue #11 («registrar los tipos
+nuevos en esquema, contratos y README»). Sin cambios de comportamiento del
+grafo; solo superficie de docs/contratos.
+
+Issue #11 cerrado tras el follow-up. Issues #7, #9 y #10 (arquitectura,
+PRs A/B/C) cerrados también al verificar su trabajo ya fusionado.
 
 #### PR 7: guards Angular
 
