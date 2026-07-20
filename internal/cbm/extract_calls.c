@@ -345,6 +345,40 @@ static char *extract_callee_from_fields(CBMArena *a, TSNode node, const char *so
         if (strcmp(fk, "selector_expression") == 0) {
             return resolve_chained_selector(a, func_node, source);
         }
+        // C# generic invocation: `AddScoped<TService,TImpl>(...)` or
+        // `recv.AddScoped<TService,TImpl>(...)`. The `function` field is either a
+        // `generic_name` (bare generic call) or a `member_access_expression`
+        // whose `name` child is a `generic_name` (member generic call). In both
+        // cases cbm_node_text would embed the `<...>` in the callee, which never
+        // resolves and leaks type args into the edge label. Strip the type
+        // argument list and return the bare callee ("AddScoped" or
+        // "recv.AddScoped"). The structured type args are captured separately by
+        // extract_call_generic_args (PR 11). The identifier of a C# generic_name
+        // is not exposed via the "name" field, so resolve it as the first
+        // identifier child.
+        if (strcmp(fk, "generic_name") == 0) {
+            TSNode gname = cbm_find_child_by_kind(func_node, "identifier");
+            if (!ts_node_is_null(gname)) {
+                return cbm_node_text(a, gname, source);
+            }
+        }
+        if (strcmp(fk, "member_access_expression") == 0) {
+            TSNode mname = ts_node_child_by_field_name(func_node, TS_FIELD("name"));
+            if (!ts_node_is_null(mname) && strcmp(ts_node_type(mname), "generic_name") == 0) {
+                TSNode gname = cbm_find_child_by_kind(mname, "identifier");
+                TSNode recv = ts_node_child_by_field_name(func_node, TS_FIELD("expression"));
+                if (!ts_node_is_null(gname)) {
+                    char *method = cbm_node_text(a, gname, source);
+                    if (!ts_node_is_null(recv)) {
+                        char *rt = cbm_node_text(a, recv, source);
+                        if (rt && rt[0] && method && method[0]) {
+                            return cbm_arena_sprintf(a, "%s.%s", rt, method);
+                        }
+                    }
+                    return method;
+                }
+            }
+        }
         if (strcmp(fk, "identifier") == 0 || strcmp(fk, "simple_identifier") == 0 ||
             strcmp(fk, "attribute") == 0 || strcmp(fk, "member_expression") == 0 ||
             strcmp(fk, "field_expression") == 0 || strcmp(fk, "dot") == 0 ||
@@ -1260,6 +1294,70 @@ static char *extract_callee_lang_specific(CBMArena *a, TSNode node, const char *
     }
 
     return extract_scripting_callee(a, node, source, lang, nk);
+}
+
+/* Extract the generic type arguments of a call expression's callee, when the
+ * callee carries a `generic_name` (C# `AddScoped<TService,TImpl>(...)`,
+ * `DoThing<int>(...)`). Returns an arena-allocated comma-joined string
+ * ("IOrderService,OrderService") and writes the count to *out_count, or NULL
+ * when the call is not generic. Each type argument keeps its full source text
+ * so nested generics (`Dictionary<string,int>`) round-trip unchanged (PR 11). */
+static const char *extract_call_generic_args(CBMArena *a, TSNode node, const char *source,
+                                             int *out_count) {
+    *out_count = 0;
+    TSNode func = ts_node_child_by_field_name(node, TS_FIELD("function"));
+    if (ts_node_is_null(func)) {
+        return NULL;
+    }
+    const char *fk = ts_node_type(func);
+    TSNode gn = {0};
+    if (strcmp(fk, "generic_name") == 0) {
+        gn = func;
+    } else if (strcmp(fk, "member_access_expression") == 0) {
+        TSNode mname = ts_node_child_by_field_name(func, TS_FIELD("name"));
+        if (!ts_node_is_null(mname) && strcmp(ts_node_type(mname), "generic_name") == 0) {
+            gn = mname;
+        }
+    }
+    if (ts_node_is_null(gn)) {
+        return NULL;
+    }
+    TSNode ta_list = cbm_find_child_by_kind(gn, "type_argument_list");
+    if (ts_node_is_null(ta_list)) {
+        return NULL;
+    }
+    /* Build "arg1,arg2,..." from the named children of the type_argument_list.
+     * Each named child is a type expression; keep its full text so nested
+     * generics (`Dictionary<string,int>`) round-trip unchanged. */
+    enum { GA_CAP = 1024 };
+    char buf[GA_CAP];
+    size_t pos = 0;
+    int count = 0;
+    uint32_t n = ts_node_named_child_count(ta_list);
+    for (uint32_t i = 0; i < n; i++) {
+        TSNode arg = ts_node_named_child(ta_list, i);
+        char *txt = cbm_node_text(a, arg, source);
+        if (!txt || !txt[0]) {
+            continue;
+        }
+        size_t tlen = strlen(txt);
+        size_t need = tlen + (count > 0 ? 1 : 0);
+        if (pos + need + 1 > GA_CAP) {
+            break; /* truncate gracefully — keep the buffer valid */
+        }
+        if (count > 0) {
+            buf[pos++] = ',';
+        }
+        memcpy(buf + pos, txt, tlen);
+        pos += tlen;
+        count++;
+    }
+    if (count == 0) {
+        return NULL;
+    }
+    buf[pos] = '\0';
+    *out_count = count;
+    return cbm_arena_strdup(a, buf);
 }
 
 // Extract callee name from a call node
@@ -2228,6 +2326,12 @@ void handle_calls(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec *spec, Walk
                 }
                 extract_call_args(ctx, args, &call);
             }
+
+            // Preserve generic type arguments from the callee's generic_name
+            // (C# AddScoped<TService,TImpl>, DoThing<int>). Extraction-only
+            // surface; consumed by later passes (PR 12). (PR 11)
+            call.generic_args =
+                extract_call_generic_args(ctx->arena, node, ctx->source, &call.generic_arg_count);
 
             cbm_calls_push(&ctx->result->calls, ctx->arena, call);
 
